@@ -87,7 +87,8 @@ function toast(msg, isError = false) {
   t.textContent = msg;
   t.className = "toast show" + (isError ? " error" : "");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (t.className = "toast"), isError ? 5000 : 2500);
+  toast.timer = setTimeout(() => (t.className = "toast"), isError ? 12000 : 2500);
+  t.onclick = () => (t.className = "toast"); // tap to dismiss
 }
 
 /** Run an async action with the button showing a spinner; errors become a toast. */
@@ -111,18 +112,34 @@ function must({ data, error }) {
   return data;
 }
 
-/** Call an Edge Function and surface its error message. */
-async function callFn(name, body) {
-  const { data, error } = await sb.functions.invoke(name, { body });
-  if (error) {
-    let msg = error.message;
-    try {
-      const j = await error.context.json();
-      if (j?.error) msg = j.error;
-    } catch { /* keep generic message */ }
-    throw new Error(msg);
+/** Call an Edge Function; show its real error and status, and give up after 60 seconds. */
+async function callFn(name, body, timeoutMs = 90000) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${name} took longer than ${timeoutMs / 1000} s. Check the function's logs in Supabase.`)), timeoutMs);
+  });
+  try {
+    const { data, error } = await Promise.race([sb.functions.invoke(name, { body }), timeout]);
+    if (error) {
+      let msg = error.message;
+      const res = error.context;
+      if (res && typeof res.text === "function") {
+        let text = "";
+        try { text = await res.text(); } catch { /* body already read */ }
+        try {
+          const j = JSON.parse(text);
+          msg = j.error || j.message || j.msg || text;
+        } catch {
+          if (text) msg = text.slice(0, 200);
+        }
+        msg = `${name}: ${msg} (status ${res.status})`;
+      }
+      throw new Error(msg);
+    }
+    return data;
+  } finally {
+    clearTimeout(timer);
   }
-  return data;
 }
 
 /** Shrink an image and return base64 JPEG. Tall share images keep their height. */
