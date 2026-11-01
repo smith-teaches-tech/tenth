@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e1013">
+  <title>Tenth</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand" id="brand">Tenth</span>
+    <span class="topbar-right" id="topbar-right"></span>
+  </header>
+
+  <main id="view" class="view"></main>
+
+  <nav class="tabs" id="tabs" hidden>
+    <button data-tab="day" class="tab active"><span class="tab-icon">◉</span>Day</button>
+    <button data-tab="progress" class="tab"><span class="tab-icon">↘</span>Progress</button>
+    <button data-tab="meals" class="tab"><span class="tab-icon">★</span>Meals</button>
+    <button data-tab="settings" class="tab"><span class="tab-icon">⚙</span>Settings</button>
+  </nav>
+
+  <dialog id="sheet" class="sheet">
+    <div class="sheet-head">
+      <h2 id="sheet-title"></h2>
+      <button class="icon-btn" id="sheet-close" aria-label="Close">✕</button>
+    </div>
+    <div id="sheet-body" class="sheet-body"></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    }
+  </script>
+</body>
+</html>
