@@ -379,6 +379,8 @@ Deno.serve(async (req) => {
         deficit_kcal: plan.deficit_kcal,
         method: plan.method,
         notes: plan.notes.join(" "),
+        source: "math",   // a fresh plan replaces any AI fine-tuning for the day
+        ai_reason: null,
       }, { onConflict: "user_id,for_date" });
       if (upErr) throw upErr;
     }

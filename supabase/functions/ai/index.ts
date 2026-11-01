@@ -18,7 +18,12 @@
 // Request (POST, JSON, with your signed-in session token):
 //   { "mode": "food_photo" | "food_text" | "label" | "workout",
 //     "image": "<base64, no data: prefix>", "mime_type": "image/jpeg",
-//     "note": "ingredients, weights, or what the workout was" }
+//     "note": "ingredients, weights, or what the workout was",
+//     "meal": "breakfast" | "lunch" | "dinner" | "snack", "day": "YYYY-MM-DD" }   (food modes; adds a balance tip)
+//   { "mode": "targets", "today": "YYYY-MM-DD", "for_date": "YYYY-MM-DD" }
+//       suggests a macro split for for_date, starting from the math target already saved for it.
+//       Guardrails: calories within 8% of the math, protein never below it, fat 0.6-1.5 g/kg,
+//       carbs fill the rest. Nothing is saved; the app saves only if you tap Use these.
 //   { "mode": "review", "today": "YYYY-MM-DD", "days": 7 }   recommendations from your logs;
 //   days: 1 reviews one day including planned meals, 7 (default) the last week
 
@@ -74,10 +79,15 @@ Return JSON only, in exactly this shape:
 {"items":[{"name":string,"grams":number,"grams_source":"stated"|"estimated","kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number,"fiber_g":number}],
  "confidence":"high"|"medium"|"low",
  "assumptions":[string],
- "question":string|null}
+ "question":string|null,
+ "balance_tip":string|null}
 
 confidence: "high" when every weight is stated; "medium" when ingredients are stated but some weights are estimated; "low" when working from the photo alone.
-question: the single short question whose answer would most improve accuracy, or null.`;
+question: the single short question whose answer would most improve accuracy, or null.
+balance_tip: when you are told which meal this is and how the day stands against its targets, one short
+sentence on how this meal fits: for example light on protein for a main meal, or most of the day's
+remaining carbs in a snack. Name a concrete swap or addition with an amount. null if it fits well
+or no day context is given.`;
 
 const LABEL_PROMPT = `Read the nutrition facts label in this image for a calorie-tracking app.
 The label may be in English, Arabic or both; read the numbers, whatever the language.
@@ -131,6 +141,23 @@ Return JSON only, in exactly this shape:
 {"summary":string,                       // two sentences at most
  "wins":[string],                        // up to 2
  "recommendations":[{"title":string,"detail":string}]}  // 2 to 4, most important first`;
+
+const TARGETS_PROMPT = `You are a sports nutrition coach fine-tuning tomorrow's macro targets for someone
+cutting toward a body fat target while keeping muscle.
+
+You get JSON with: the math target for the day (calories from the weight-trend model, protein and fat per kg,
+carbs as the remainder), the last 7 days of what was actually eaten against each day's target, recent workouts
+(including today's, whose burn is already eaten back in the math target), steps, weight trend and profile.
+
+Adjust the split, not the strategy:
+- Keep calories close to the math target (within a few percent). Only move them for a clear reason in the data.
+- Never lower protein below the math target. Raise it if recent days fell short and that left room elsewhere, or after hard training.
+- Shift carbs toward hard training days and lower on rest days; keep fat at a sensible floor.
+- Use the adherence pattern: if protein keeps falling short, say so in the reason.
+
+Return JSON only, in exactly this shape:
+{"kcal":integer,"protein_g":integer,"carbs_g":integer,"fat_g":integer,
+ "reason":string}   // reason: two short sentences, specific to the data`;
 
 // ---------------------------------------------------------------------------
 // Claude call
@@ -314,6 +341,7 @@ function checkFood(out: any) {
     confidence: out.confidence ?? "low",
     assumptions: Array.isArray(out.assumptions) ? out.assumptions : [],
     question: out.question ?? null,
+    balance_tip: typeof out.balance_tip === "string" && out.balance_tip.trim() ? out.balance_tip.trim() : null,
     warnings,
   };
 }
@@ -353,6 +381,37 @@ function checkWorkout(out: any) {
   };
 }
 
+/** What's eaten so far on `day` and that day's target, for the balance tip. */
+async function dayContext(supabase: any, day: string | undefined, meal: string | undefined): Promise<string> {
+  const MEALS = ["breakfast", "lunch", "dinner", "snack"];
+  const mealText = meal && MEALS.includes(meal) ? `This is the user's ${meal}.` : "";
+  if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return mealText;
+  const [target, eaten] = await Promise.all([
+    supabase.from("daily_targets").select("kcal, protein_g, carbs_g, fat_g").eq("for_date", day).maybeSingle(),
+    supabase.from("food_logs").select("meal, kcal, protein_g, carbs_g, fat_g").eq("eaten_on", day).eq("status", "eaten"),
+  ]);
+  if (target.error || eaten.error) return mealText; // context is a nice-to-have; never block the estimate
+  const sum = { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
+  const mealsDone = new Set<string>();
+  for (const e of eaten.data ?? []) {
+    for (const k of Object.keys(sum) as (keyof typeof sum)[]) sum[k] += Number(e[k]) || 0;
+    mealsDone.add(e.meal);
+  }
+  const r = (v: number) => Math.round(v);
+  const lines = [mealText];
+  lines.push(`Eaten so far today: ${r(sum.kcal)} kcal, protein ${r(sum.protein_g)} g, carbs ${r(sum.carbs_g)} g, fat ${r(sum.fat_g)} g` +
+    (mealsDone.size ? ` (meals logged: ${[...mealsDone].join(", ")}).` : " (nothing logged yet)."));
+  if (target.data) {
+    const t = target.data;
+    lines.push(`Today's target: ${t.kcal} kcal, protein ${t.protein_g} g, carbs ${t.carbs_g} g, fat ${t.fat_g} g. ` +
+      `Remaining before this meal: ${r(t.kcal - sum.kcal)} kcal, protein ${r(t.protein_g - sum.protein_g)} g, ` +
+      `carbs ${r(t.carbs_g - sum.carbs_g)} g, fat ${r(t.fat_g - sum.fat_g)} g.`);
+  } else {
+    lines.push("No calorie target is set for today.");
+  }
+  return lines.filter(Boolean).join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -385,12 +444,14 @@ Deno.serve(async (req) => {
     switch (mode) {
       case "food_photo": {
         if (!image) throw new HttpError(400, "food_photo needs an image.");
-        const out = await ask([{ text: FOOD_PROMPT }, ...imagePart, { text: `User's note: ${note || "(none)"}` }], "smart");
+        const ctx = await dayContext(supabase, body.day, body.meal);
+        const out = await ask([{ text: FOOD_PROMPT }, ...imagePart, { text: `User's note: ${note || "(none)"}\n\n${ctx}` }], "smart");
         return json(checkFood(out));
       }
       case "food_text": {
         if (!note) throw new HttpError(400, "food_text needs a note describing the meal.");
-        const out = await ask([{ text: FOOD_PROMPT }, { text: `No photo. User's note: ${note}` }], "smart");
+        const ctx = await dayContext(supabase, body.day, body.meal);
+        const out = await ask([{ text: FOOD_PROMPT }, { text: `No photo. User's note: ${note}\n\n${ctx}` }], "smart");
         return json(checkFood(out));
       }
       case "label": {
@@ -402,6 +463,72 @@ Deno.serve(async (req) => {
         if (!image) throw new HttpError(400, "workout needs an image.");
         const out = await ask([{ text: WORKOUT_PROMPT }, ...imagePart], "fast");
         return json({ ...checkWorkout(out), description: note || null });
+      }
+      case "targets": {
+        const today: string = body.today, forDate: string = body.for_date;
+        const D = /^\d{4}-\d{2}-\d{2}$/;
+        if (!D.test(today ?? "") || !D.test(forDate ?? "")) throw new HttpError(400, "targets needs today and for_date as YYYY-MM-DD.");
+        const start = new Date(Date.parse(today + "T00:00:00Z") - 6 * 86_400_000).toISOString().slice(0, 10);
+        const [target, prof, weight, foods, targets, works, steps] = await Promise.all([
+          supabase.from("daily_targets").select("*").eq("for_date", forDate).maybeSingle(),
+          supabase.from("profile").select("sex, birth_date, height_cm, target_bf_pct, protein_g_per_kg, fat_g_per_kg").maybeSingle(),
+          supabase.from("body_metrics").select("measured_on, weight_kg, body_fat_pct").lte("measured_on", today).order("measured_on", { ascending: false }).limit(14),
+          supabase.from("food_logs").select("eaten_on, kcal, protein_g, carbs_g, fat_g").eq("status", "eaten").gte("eaten_on", start).lte("eaten_on", today),
+          supabase.from("daily_targets").select("for_date, kcal, protein_g, carbs_g, fat_g").gte("for_date", start).lte("for_date", today),
+          supabase.from("workouts").select("done_on, type, description, duration_s, kcal_used, training_load").gte("done_on", start).lte("done_on", today),
+          supabase.from("daily_activity").select("day, steps").gte("day", start).lte("day", today),
+        ]);
+        for (const r of [target, prof, weight, foods, targets, works, steps]) if (r.error) throw new HttpError(500, r.error.message);
+        const math = target.data;
+        if (!math) throw new HttpError(400, "Tap Targets first; the AI fine-tunes the math target for the day.");
+        const kg = Number(weight.data?.[0]?.weight_kg);
+        if (!kg) throw new HttpError(400, "Log a weigh-in first.");
+
+        // What was actually eaten each day, next to that day's target
+        const eaten: Record<string, { kcal: number; protein_g: number; carbs_g: number; fat_g: number }> = {};
+        for (const f of foods.data!) {
+          const e = (eaten[f.eaten_on] ??= { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 });
+          e.kcal += Number(f.kcal); e.protein_g += Number(f.protein_g); e.carbs_g += Number(f.carbs_g); e.fat_g += Number(f.fat_g);
+        }
+        const round = (o: Record<string, number>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v)]));
+        const days = Object.keys(eaten).sort().map((d) => ({
+          day: d, eaten: round(eaten[d]), target: targets.data!.find((t) => t.for_date === d) ?? null,
+        }));
+
+        const input = {
+          for_date: forDate,
+          math_target: { kcal: math.kcal, protein_g: math.protein_g, carbs_g: math.carbs_g, fat_g: math.fat_g,
+            everyday_burn: math.neat_kcal, workout_eaten_back: math.exercise_kcal, deficit: math.deficit_kcal },
+          profile: prof.data, weight_kg: kg, weigh_ins: weight.data, last_7_days: days,
+          workouts: works.data, steps: steps.data,
+        };
+        const out = await ask([{ text: TARGETS_PROMPT }, { text: JSON.stringify(input) }], "smart");
+
+        // Guardrails: the math sets the frame; the AI only reshapes inside it
+        const notes: string[] = [];
+        const n = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+        let kcal = n(out.kcal, math.kcal);
+        const lo = math.kcal * 0.92, hi = math.kcal * 1.08;
+        if (kcal < lo || kcal > hi) { kcal = Math.min(hi, Math.max(lo, kcal)); notes.push("Calories kept within 8% of the math target."); }
+        let protein = n(out.protein_g, math.protein_g);
+        if (protein < math.protein_g) { protein = math.protein_g; notes.push("Protein kept at the math target or higher."); }
+        protein = Math.min(protein, 3.0 * kg);
+        let fat = Math.min(1.5 * kg, Math.max(0.6 * kg, n(out.fat_g, math.fat_g)));
+        let carbs = (kcal - 4 * protein - 9 * fat) / 4;
+        if (carbs < 50) {
+          fat = Math.max(0.6 * kg, (kcal - 4 * protein - 4 * 50) / 9);
+          carbs = Math.max(0, (kcal - 4 * protein - 9 * fat) / 4);
+          notes.push("Fat trimmed to keep some carbs for training.");
+        }
+        if (Math.abs(carbs - n(out.carbs_g, carbs)) > 15) notes.push("Carbs recalculated so the macros add up to the calories.");
+
+        return json({
+          for_date: forDate,
+          math: { kcal: math.kcal, protein_g: math.protein_g, carbs_g: math.carbs_g, fat_g: math.fat_g },
+          suggested: { kcal: Math.round(kcal), protein_g: Math.round(protein), carbs_g: Math.round(carbs), fat_g: Math.round(fat) },
+          reason: typeof out.reason === "string" ? out.reason : "",
+          guardrails: notes,
+        });
       }
       case "review": {
         // `days` days ending `today` (a local YYYY-MM-DD date sent by the app). 1 = one day, including planned meals.
@@ -438,7 +565,7 @@ Deno.serve(async (req) => {
         });
       }
       default:
-        throw new HttpError(400, "mode must be food_photo, food_text, label, workout or review.");
+        throw new HttpError(400, "mode must be food_photo, food_text, label, workout, targets or review.");
     }
   } catch (e) {
     const status = e instanceof HttpError ? e.status : 500;

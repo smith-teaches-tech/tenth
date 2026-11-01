@@ -164,6 +164,19 @@ async function imageToBase64(file) {
   return { data: btoa(bin), mime: "image/jpeg", url: URL.createObjectURL(blob) };
 }
 
+/** Breakfast / Lunch / Dinner / Snack buttons. Returns the element; read .value for the choice. */
+function mealChooser(initial = guessMeal()) {
+  const wrap = h("div", { class: "segmented", role: "radiogroup", "aria-label": "Meal" });
+  wrap.value = initial;
+  const draw = () => fill(wrap, ...MEALS.map((m) => h("button", {
+    type: "button", role: "radio", "aria-checked": String(wrap.value === m),
+    class: wrap.value === m ? "on" : null,
+    onclick: () => { wrap.value = m; draw(); },
+  }, cap(m))));
+  draw();
+  return wrap;
+}
+
 /** Camera / Photos / Files buttons. Files opens Android's file browser for images saved there. */
 function picker(onFile, { camera = true } = {}) {
   const make = (label, attrs) => {
@@ -363,6 +376,7 @@ function openFoodReview(opts) {
   openSheet(opts.title || "Check and log",
     ...(opts.warnings || []).map((w) => h("div", { class: "warn" }, w)),
     opts.confidence ? h("div", { class: "small muted" }, `AI confidence: ${opts.confidence}`) : null,
+    opts.balanceTip ? h("div", { class: "note", style: "border-left:3px solid var(--accent)" }, "⚖ ", opts.balanceTip) : null,
     ...(opts.assumptions || []).map((a) => h("div", { class: "note" }, "Assumed: ", a)),
     opts.question && opts.rerun
       ? h("div", { class: "note stack" },
@@ -391,8 +405,10 @@ function openFoodReview(opts) {
 // Food: photo, typed, saved, barcode
 // ---------------------------------------------------------------------------
 
-function openPhotoFood(initialFile) {
+function openPhotoFood(initialFile, ctx = {}) {
   let img = null;
+  const meal = mealChooser(ctx.meal || guessMeal());
+  const day = ctx.day || state.day;
   const preview = h("img", { class: "preview hidden", alt: "" });
   const note = h("textarea", { placeholder: "Ingredients and weights, e.g. 180 g grilled chicken breast, 150 g cooked basmati rice, 1 tbsp olive oil" });
   const go = h("button", { class: "btn", disabled: true }, "Estimate");
@@ -408,17 +424,21 @@ function openPhotoFood(initialFile) {
 
   const run = async (extra = "") => {
     const fullNote = [note.value.trim(), extra && `Answer to your question: ${extra}`].filter(Boolean).join("\n");
-    const out = await callFn("ai", { mode: "food_photo", image: img.data, mime_type: img.mime, note: fullNote });
+    const out = await callFn("ai", { mode: "food_photo", image: img.data, mime_type: img.mime, note: fullNote, meal: meal.value, day });
     note.value = fullNote;
     openFoodReview({
+      ...ctx,
       title: "Check the estimate",
       items: out.items, confidence: out.confidence, assumptions: out.assumptions, warnings: out.warnings,
       question: out.question, rerun: (ans) => run(ans), source: "photo",
+      meal: meal.value, day, balanceTip: out.balance_tip,
     });
   };
   go.addEventListener("click", () => busy(go, () => run()));
 
   openSheet("Food photo",
+    h("label", {}, "Which meal?"), meal,
+    h("div", { style: "height:10px" }),
     picker(setFile), preview,
     h("label", {}, "What's in it (weights make it far more accurate)"), note,
     h("div", { style: "height:10px" }), go);
@@ -426,24 +446,29 @@ function openPhotoFood(initialFile) {
 }
 
 function openTypedFood(ctx = {}) {
+  const meal = mealChooser(ctx.meal || guessMeal());
+  const day = ctx.day || state.day;
   const note = h("textarea", { placeholder: "e.g. 2 eggs scrambled in 5 g butter, 1 slice sourdough 40 g, 150 g Greek yogurt 2%" });
   const go = h("button", { class: "btn" }, "Estimate");
   const run = async (extra = "") => {
     const text = [note.value.trim(), extra && `Answer to your question: ${extra}`].filter(Boolean).join("\n");
     if (!text) throw new Error("Describe the meal first.");
-    const out = await callFn("ai", { mode: "food_text", note: text });
+    const out = await callFn("ai", { mode: "food_text", note: text, meal: meal.value, day });
     note.value = text;
     openFoodReview({
+      ...ctx,
       title: "Check the estimate",
       items: out.items, confidence: out.confidence, assumptions: out.assumptions, warnings: out.warnings,
-      question: out.question, rerun: (ans) => run(ans), source: "text", ...ctx,
+      question: out.question, rerun: (ans) => run(ans), source: "text",
+      meal: meal.value, day, balanceTip: out.balance_tip,
     });
   };
   go.addEventListener("click", () => busy(go, () => run()));
   openSheet("Type a meal",
+    h("label", {}, "Which meal?"), meal,
     h("label", {}, "What did you eat?"), note,
     h("div", { style: "height:10px" }), go,
-    h("button", { class: "link", onclick: () => openFoodReview({ title: "Enter numbers", source: "manual", ...ctx }) }, "Or enter the numbers yourself"));
+    h("button", { class: "link", onclick: () => openFoodReview({ title: "Enter numbers", source: "manual", ...ctx, meal: meal.value, day }) }, "Or enter the numbers yourself"));
 }
 
 async function openSavedPicker() {
@@ -861,7 +886,43 @@ async function runPlan(btn) {
       p.timeline ? h("div", { class: "note" },
         `Goal weight ${p.timeline.goal_weight_kg} kg at ${state.profile?.target_bf_pct ?? 10}% · ${p.timeline.kg_to_lose} kg to go · about ${p.timeline.weeks} weeks (${fmtDay(p.timeline.eta, { day: "numeric", month: "short", year: "numeric" })}).`) : null,
       ...p.notes.map((n) => h("div", { class: "note" }, n)),
+      h("button", { class: "btn secondary", onclick: (ev) => fineTuneTargets(ev.currentTarget, state.day, forDate) }, "Fine-tune macros with AI"),
     );
+  });
+}
+
+/** Ask the AI to reshape the math target; save only if you accept. */
+async function fineTuneTargets(btn, day, forDate) {
+  await busy(btn, async () => {
+    const r = await callFn("ai", { mode: "targets", today: day, for_date: forDate });
+    const row = (label, a, b, unit) => h("tr", {},
+      h("td", {}, label), h("td", {}, `${a}${unit}`), h("td", {}, `${b}${unit}`),
+      h("td", { style: `color:${b > a ? "var(--accent)" : b < a ? "var(--warn)" : "inherit"}` }, b === a ? "–" : `${b > a ? "+" : ""}${b - a}`));
+    const use = h("button", { class: "btn" }, "Use these");
+    use.addEventListener("click", () => busy(use, async () => {
+      must(await sb.from("daily_targets").update({
+        kcal: r.suggested.kcal, protein_g: r.suggested.protein_g, carbs_g: r.suggested.carbs_g, fat_g: r.suggested.fat_g,
+        source: "ai", ai_reason: r.reason || null,
+      }).eq("for_date", forDate));
+      closeSheet();
+      toast("AI-tuned targets saved");
+      render();
+    }));
+    openSheet(`AI targets · ${fmtDay(forDate)}`,
+      h("div", { class: "note" }, r.reason || "No reason given."),
+      h("table", { class: "num" },
+        h("tr", {}, h("th", {}, ""), h("th", {}, "Math"), h("th", {}, "AI"), h("th", {}, "Change")),
+        row("Calories", r.math.kcal, r.suggested.kcal, ""),
+        row("Protein", r.math.protein_g, r.suggested.protein_g, " g"),
+        row("Carbs", r.math.carbs_g, r.suggested.carbs_g, " g"),
+        row("Fat", r.math.fat_g, r.suggested.fat_g, " g")),
+      h("div", { style: "display:flex;gap:16px;align-items:center;margin:12px 0" },
+        donut(macroParts(r.suggested), 110, `${r.suggested.kcal}`, "kcal"),
+        macroLegend(macroParts(r.suggested))),
+      ...(r.guardrails || []).map((g) => h("div", { class: "small muted" }, "Guardrail: ", g)),
+      h("div", { style: "height:8px" }),
+      use,
+      h("button", { class: "btn secondary", onclick: closeSheet }, "Keep the math targets"));
   });
 }
 
@@ -1099,6 +1160,7 @@ function openAddToSlot(day, slot, saved, reopen) {
     ...others.map(row),
     h("div", { style: "height:8px" }),
     h("button", { class: "btn secondary", onclick: () => openTypedFood(ctx) }, "Describe a new meal (AI)"),
+    h("button", { class: "btn secondary", onclick: () => openPhotoFood(null, ctx) }, "Photo of a new meal (AI)"),
     h("button", { class: "btn secondary", onclick: () => openFoodReview({ ...ctx, title: "Build a meal", source: "manual" }) }, "Enter numbers myself"),
     h("button", { class: "link", onclick: reopen }, "‹ Back to plan"));
 }
@@ -1106,6 +1168,63 @@ function openAddToSlot(day, slot, saved, reopen) {
 // ---------------------------------------------------------------------------
 // Screens
 // ---------------------------------------------------------------------------
+
+const MACROS = [
+  { key: "protein_g", label: "Protein", kcalPerG: 4, color: "var(--protein)" },
+  { key: "carbs_g", label: "Carbs", kcalPerG: 4, color: "var(--carbs)" },
+  { key: "fat_g", label: "Fat", kcalPerG: 9, color: "var(--fat)" },
+];
+
+/** Macro grams -> slices by calories, with each macro's share of the total. */
+function macroParts(m, target = null) {
+  const kcals = MACROS.map((x) => (Number(m[x.key]) || 0) * x.kcalPerG);
+  const total = kcals.reduce((a, b) => a + b, 0);
+  const tKcals = target ? MACROS.map((x) => (Number(target[x.key]) || 0) * x.kcalPerG) : null;
+  const tTotal = tKcals ? tKcals.reduce((a, b) => a + b, 0) : 0;
+  return MACROS.map((x, i) => ({
+    ...x,
+    grams: Number(m[x.key]) || 0,
+    value: kcals[i],
+    pct: total ? Math.round((kcals[i] / total) * 100) : 0,
+    targetPct: tTotal ? Math.round((tKcals[i] / tTotal) * 100) : null,
+    targetGrams: target ? Number(target[x.key]) || 0 : null,
+  }));
+}
+
+/** Donut chart: slices separated by a thin gap, centre label. */
+function donut(parts, size = 120, centre = "", sub = "") {
+  const R = size / 2 - 9, C = 2 * Math.PI * R, cx = size / 2;
+  const total = parts.reduce((a, p) => a + p.value, 0);
+  const gap = total ? 2 : 0;
+  let offset = 0;
+  const arcs = total
+    ? parts.filter((p) => p.value > 0).map((p) => {
+        const len = (p.value / total) * C;
+        const arc = s("circle", {
+          cx, cy: cx, r: R, fill: "none", stroke: p.color, "stroke-width": 16,
+          "stroke-dasharray": `${Math.max(0, len - gap)} ${C}`, "stroke-dashoffset": -offset,
+          transform: `rotate(-90 ${cx} ${cx})`,
+        }, s("title", {}, `${p.label}: ${r0(p.grams)} g, ${p.pct}% of calories`));
+        offset += len;
+        return arc;
+      })
+    : [s("circle", { cx, cy: cx, r: R, fill: "none", stroke: "var(--card-2)", "stroke-width": 16 })];
+  return s("svg", { viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: "img", "aria-label": parts.map((p) => `${p.label} ${p.pct}%`).join(", ") },
+    ...arcs,
+    s("text", { x: cx, y: cx + 2, "text-anchor": "middle", "font-size": 18, "font-weight": 700, fill: "var(--text)" }, centre),
+    sub ? s("text", { x: cx, y: cx + 18, "text-anchor": "middle", "font-size": 10, fill: "var(--muted)" }, sub) : null);
+}
+
+/** Legend beside a donut: swatch, grams, share of calories, and the target share when known. */
+function macroLegend(parts) {
+  return h("div", { class: "legend" },
+    ...parts.map((p) => h("div", { class: "legend-row num" },
+      h("span", { class: "swatch", style: `background:${p.color}` }),
+      h("span", { class: "legend-label" }, p.label),
+      h("span", {}, `${r0(p.grams)} g`),
+      h("b", {}, `${p.pct}%`),
+      p.targetPct != null ? h("span", { class: "muted small" }, `goal ${p.targetPct}%`) : null)));
+}
 
 function ring(eaten, target) {
   const R = 50, C = 2 * Math.PI * R;
@@ -1160,12 +1279,28 @@ async function renderDay(view) {
         bar("Carbs", eaten.carbs_g, target?.carbs_g, "var(--carbs)"),
         bar("Fat", eaten.fat_g, target?.fat_g, "var(--fat)"),
         target
-          ? h("div", { class: "small muted num" }, `${r0(eaten.kcal)} of ${target.kcal} kcal `, h("span", { class: "badge" }, target.method))
+          ? h("div", { class: "small muted num" }, `${r0(eaten.kcal)} of ${target.kcal} kcal `,
+              h("span", { class: "badge" }, target.source === "ai" ? "AI-tuned" : target.method))
           : h("div", { class: "small muted" }, "No target for this day. Tap Targets the evening before."),
         planned.kcal
           ? h("div", { class: "small num", style: "color:var(--accent)" },
               `+ ${r0(planned.kcal)} planned → ${r0(eaten.kcal + planned.kcal)}${target ? ` of ${target.kcal}` : ""} kcal`)
           : null)));
+
+  // Macro split: what's eaten (or planned, before anything is eaten) next to the target's split
+  const showPlanned = !eaten.kcal && planned.kcal;
+  const splitSource = showPlanned ? planned : eaten;
+  const parts = macroParts(splitSource, target);
+  const fibre = logs.filter((e) => showPlanned ? isPlanned(e) : !isPlanned(e)).reduce((a, e) => a + (Number(e.fiber_g) || 0), 0);
+  const splitCard = splitSource.kcal
+    ? h("div", { class: "card" },
+        h("div", { class: "row" }, h("h3", {}, showPlanned ? "Planned macro split" : "Macro split"),
+          h("span", { class: "small muted num" }, `fibre ${r0(fibre)} g`)),
+        h("div", { style: "display:flex;gap:16px;align-items:center" },
+          donut(parts, 120, `${r0(splitSource.kcal)}`, "kcal"),
+          macroLegend(parts)),
+        target?.ai_reason ? h("div", { class: "small muted", style: "margin-top:8px" }, "AI: ", target.ai_reason) : null)
+    : (target?.ai_reason ? h("div", { class: "note small" }, "AI: ", target.ai_reason) : null);
 
   const act = (icon, label, fn) => h("button", { class: "action", onclick: fn }, h("b", {}, icon), label);
   const actions = h("div", { class: "actions" },
@@ -1217,6 +1352,7 @@ async function renderDay(view) {
       h("h1", {}, label),
       h("button", { class: "icon-btn", "aria-label": "Next day", disabled: d >= maxDay, onclick: () => { state.day = addDays(d, 1); render(); } }, "›")),
     targetCard,
+    splitCard,
     actions,
     chips,
     ...mealBlocks,
@@ -1256,10 +1392,66 @@ function weightChart(points) {
 
 async function renderProgress(view) {
   const t = today();
-  const [metrics, summary] = await Promise.all([
+  const [metrics, summary, targets14] = await Promise.all([
     sb.from("body_metrics").select("*").gte("measured_on", addDays(t, -120)).order("measured_on"),
     sb.from("daily_summary").select("*").gte("day", addDays(t, -13)).order("day", { ascending: false }),
+    sb.from("daily_targets").select("for_date, kcal, protein_g, carbs_g, fat_g").gte("for_date", addDays(t, -13)).lte("for_date", t),
   ]).then((rs) => rs.map(must));
+
+  // Macros over the last 14 days: one small chart per macro, bars = eaten, tick = that day's target
+  const days14 = Array.from({ length: 14 }, (_, i) => addDays(t, i - 13));
+  const byDay = new Map(summary.map((r) => [r.day, r]));
+  const tByDay = new Map(targets14.map((r) => [r.for_date, r]));
+  const logged = days14.filter((d) => byDay.get(d)?.food_entries > 0);
+  const avg = (k) => logged.length ? logged.reduce((a, d) => a + Number(byDay.get(d)[k]), 0) / logged.length : 0;
+  const avgParts = macroParts({ protein_g: avg("protein_g"), carbs_g: avg("carbs_g"), fat_g: avg("fat_g") },
+    targets14.length ? {
+      protein_g: targets14.reduce((a, r) => a + r.protein_g, 0) / targets14.length,
+      carbs_g: targets14.reduce((a, r) => a + r.carbs_g, 0) / targets14.length,
+      fat_g: targets14.reduce((a, r) => a + r.fat_g, 0) / targets14.length,
+    } : null);
+  const avgKcal = avg("intake_kcal");
+
+  const macroBars = (key, label, color, tKey) => {
+    const W = 340, H = 92, P = { l: 30, r: 4, t: 16, b: 16 };
+    const vals = days14.map((d) => ({ d, v: byDay.get(d)?.food_entries ? Number(byDay.get(d)[key]) : null, tv: tByDay.get(d)?.[tKey] ?? null }));
+    const max = Math.max(10, ...vals.map((x) => Math.max(x.v || 0, x.tv || 0))) * 1.1;
+    const bw = (W - P.l - P.r) / 14;
+    const Y = (v) => P.t + (1 - v / max) * (H - P.t - P.b);
+    const loggedVals = vals.filter((x) => x.v != null);
+    const mean = loggedVals.length ? r0(loggedVals.reduce((a, x) => a + x.v, 0) / loggedVals.length) : null;
+    return h("div", { style: "margin-top:8px" },
+      h("div", { class: "row small" }, h("b", {}, label), h("span", { class: "muted num" }, mean != null ? `avg ${mean} g` : "")),
+      s("svg", { viewBox: `0 0 ${W} ${H}`, class: "chart" },
+        s("line", { x1: P.l, x2: W - P.r, y1: Y(0), y2: Y(0), stroke: "var(--line)" }),
+        s("text", { x: P.l - 4, y: Y(max / 1.1) + 4, "text-anchor": "end", "font-size": 9, fill: "var(--muted)" }, r0(max / 1.1)),
+        ...vals.map((x, i) => {
+          const x0 = P.l + i * bw + 2, w = bw - 4;
+          const g = s("g", {
+            style: "cursor:pointer",
+            onclick: null,
+          },
+            s("rect", { x: P.l + i * bw, y: P.t, width: bw, height: H - P.t - P.b, fill: "transparent" }),
+            x.v != null ? s("rect", { x: x0, y: Y(x.v), width: w, height: Math.max(1, Y(0) - Y(x.v)), rx: 3, fill: color }) : null,
+            x.tv != null ? s("line", { x1: x0 - 1, x2: x0 + w + 1, y1: Y(x.tv), y2: Y(x.tv), stroke: "var(--text)", "stroke-width": 2 }) : null,
+            s("title", {}, `${fmtDay(x.d)}: ${x.v != null ? r0(x.v) + " g" : "not logged"}${x.tv != null ? ` of ${x.tv} g` : ""}`));
+          g.addEventListener("click", () => toast(`${label} · ${fmtDay(x.d)}: ${x.v != null ? r0(x.v) + " g" : "not logged"}${x.tv != null ? ` of ${x.tv} g target` : ""}`));
+          return g;
+        }),
+        s("text", { x: P.l, y: H - 3, "font-size": 9, fill: "var(--muted)" }, fmtDay(days14[0], { day: "numeric", month: "short" })),
+        s("text", { x: W - P.r, y: H - 3, "text-anchor": "end", "font-size": 9, fill: "var(--muted)" }, "today")));
+  };
+
+  const macroCard = h("div", { class: "card" },
+    h("h3", {}, "Macros, last 14 days"),
+    logged.length
+      ? h("div", { style: "display:flex;gap:16px;align-items:center" },
+          donut(avgParts, 110, `${r0(avgKcal)}`, "avg kcal"), macroLegend(avgParts))
+      : h("p", { class: "muted" }, "Log some meals to see your macros."),
+    logged.length ? macroBars("protein_g", "Protein", "var(--protein)", "protein_g") : null,
+    logged.length ? macroBars("carbs_g", "Carbs", "var(--carbs)", "carbs_g") : null,
+    logged.length ? macroBars("fat_g", "Fat", "var(--fat)", "fat_g") : null,
+    logged.length ? h("div", { class: "small muted", style: "margin-top:6px" }, "Bars are what you ate; the white tick is that day's target. Tap a bar for numbers.") : null);
 
   const weights = metrics.map((m) => ({ day: m.measured_on, w: Number(m.weight_kg) }));
   const bfs = metrics.filter((m) => m.body_fat_pct != null).map((m) => ({ day: m.measured_on, w: Number(m.body_fat_pct) }));
@@ -1308,6 +1500,7 @@ async function renderProgress(view) {
     h("div", { class: "card" }, h("h3", {}, "Weight"),
       weights.length >= 2 ? weightChart(weights) : h("p", { class: "muted" }, "Two or more weigh-ins draw the chart."),
       h("div", { class: "small muted" }, "Dots are weigh-ins; the line is the 7-day average.")),
+    macroCard,
     bfs.length >= 2 ? h("div", { class: "card" }, h("h3", {}, "Body fat %"), weightChart(bfs)) : null,
     tapeCard,
     h("div", { class: "card" }, h("h3", {}, "Where you're heading"), statsBox),
@@ -1315,11 +1508,12 @@ async function renderProgress(view) {
     h("div", { class: "card" }, h("h3", {}, "Last 14 days"),
       summary.length
         ? h("table", { class: "num" },
-            h("tr", {}, h("th", {}, "Day"), h("th", {}, "Eaten"), h("th", {}, "Target"), h("th", {}, "Workout"), h("th", {}, "Steps"), h("th", {}, "kg")),
+            h("tr", {}, h("th", {}, "Day"), h("th", {}, "Eaten"), h("th", {}, "Target"), h("th", {}, "Prot."), h("th", {}, "Workout"), h("th", {}, "Steps"), h("th", {}, "kg")),
             ...summary.map((r) => h("tr", {},
               h("td", {}, fmtDay(r.day, { weekday: "short", day: "numeric" })),
               h("td", {}, r.food_entries ? r0(r.intake_kcal) : "–"),
               h("td", {}, r.target_kcal ?? "–"),
+              h("td", {}, r.food_entries ? `${r0(r.protein_g)}${r.target_protein_g ? "/" + r.target_protein_g : ""}` : "–"),
               h("td", {}, r.exercise_kcal ? r0(r.exercise_kcal) : "–"),
               h("td", {}, r.steps != null ? (r.steps / 1000).toFixed(1) + "k" : "–"),
               h("td", {}, r.weight_kg != null ? r1(r.weight_kg) : "–"))))

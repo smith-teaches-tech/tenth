@@ -7,9 +7,9 @@
   --muted: #8b93a0;
   --accent: #2ee59d;
   --accent-ink: #062b1c;
-  --protein: #5ab0ff;
-  --carbs: #ffb547;
-  --fat: #ff7aa8;
+  --protein: #3a8fe0;
+  --carbs: #cc7f18;
+  --fat: #d4588a;
   --warn: #ffb547;
   --danger: #ff5d5d;
   --radius: 16px;
@@ -173,3 +173,15 @@ video.scanner { width: 100%; border-radius: 12px; background: #000; aspect-ratio
 
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -3px; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Macro legend beside donuts */
+.legend { display: grid; gap: 6px; flex: 1; min-width: 0; }
+.legend-row { display: grid; grid-template-columns: 10px 1fr auto auto; gap: 4px 8px; align-items: center; font-size: 13px; }
+.legend-row .muted.small { grid-column: 2 / -1; margin-top: -4px; }
+.swatch { width: 10px; height: 10px; border-radius: 3px; }
+.legend-label { color: var(--text); }
+
+/* Meal chooser */
+.segmented { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; background: var(--card-2); border-radius: 12px; padding: 4px; }
+.segmented button { background: none; border: 0; border-radius: 9px; padding: 10px 2px; font-size: 14px; color: var(--muted); }
+.segmented button.on { background: var(--accent); color: var(--accent-ink); font-weight: 650; }
