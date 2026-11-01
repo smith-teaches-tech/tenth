@@ -78,14 +78,23 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--card-2); color: var(--muted); }
 
 /* Action grid */
-.actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
+.actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
 .action { background: var(--card); border: 0; border-radius: 14px; padding: 12px 4px; display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 12px; }
 .action b { font-size: 22px; font-weight: 400; }
 
 /* Entries */
 .meal-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; text-transform: capitalize; margin: 14px 2px 6px; }
-.entry { width: 100%; text-align: left; background: var(--card); border: 0; border-radius: 12px; padding: 12px 14px; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 10px; }
+.entry { display: flex; align-items: stretch; gap: 4px; background: var(--card); border-radius: 12px; margin-bottom: 6px; border: 1px solid transparent; }
+.entry.planned { background: transparent; border: 1px dashed var(--line); }
+.entry.planned .desc { color: var(--muted); }
+.entry-main { flex: 1; min-width: 0; display: flex; justify-content: space-between; gap: 10px; text-align: left; background: none; border: 0; padding: 12px 14px; }
+.entry-btn { flex: none; width: 44px; background: none; border: 0; border-left: 1px solid var(--line); color: var(--muted); font-size: 18px; }
+.entry-btn.ate { color: var(--accent); font-weight: 700; }
 .entry .desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet .entry { background: var(--card-2); }
+.sheet .entry.planned { background: transparent; }
+.add-slot { width: 100%; background: none; border: 1px dashed var(--line); border-radius: 12px; padding: 10px; color: var(--accent); margin-bottom: 4px; }
+details summary { padding: 6px 0; cursor: pointer; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .chip { background: var(--card); border: 0; border-radius: 99px; padding: 8px 12px; font-size: 13px; }
 

@@ -322,7 +322,7 @@ Deno.serve(async (req) => {
       supabase.from("body_metrics").select("measured_on, weight_kg").gte("measured_on", start).lte("measured_on", today).order("measured_on"),
       supabase.from("body_metrics").select("body_fat_pct").not("body_fat_pct", "is", null)
         .gte("measured_on", addDays(today, -42)).lte("measured_on", today).order("measured_on", { ascending: false }).limit(3),
-      supabase.from("food_logs").select("eaten_on, meal, kcal").gte("eaten_on", start).lte("eaten_on", yesterday),
+      supabase.from("food_logs").select("eaten_on, meal, kcal").eq("status", "eaten").gte("eaten_on", start).lte("eaten_on", yesterday),
       supabase.from("workouts").select("done_on, kcal_used, training_load").gte("done_on", start).lte("done_on", today),
       supabase.from("daily_activity").select("day, steps").gte("day", start).lte("day", today),
     ]);

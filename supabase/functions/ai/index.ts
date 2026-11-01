@@ -12,7 +12,8 @@
 //   { "mode": "food_photo" | "food_text" | "label" | "workout",
 //     "image": "<base64, no data: prefix>", "mime_type": "image/jpeg",
 //     "note": "ingredients, weights, or what the workout was" }
-//   { "mode": "review", "today": "YYYY-MM-DD" }   weekly recommendations from your last 7 days of logs
+//   { "mode": "review", "today": "YYYY-MM-DD", "days": 7 }   recommendations from your logs;
+//   days: 1 reviews one day including planned meals, 7 (default) the last week
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -95,11 +96,14 @@ Return JSON only, in exactly this shape:
  "aerobic_te":number|null,"anaerobic_te":number|null,"training_load":integer|null,"recovery_h":integer|null,
  "device":string|null}`;
 
-const REVIEW_PROMPT = `You are a sports nutrition coach reviewing one week of food and training logs
+const REVIEW_PROMPT = `You are a sports nutrition coach reviewing food and training logs
 for someone cutting toward a body fat target while keeping muscle.
 
-You get JSON with: profile, daily targets, each day's food entries (with ingredient breakdowns where known),
-workouts, steps and weigh-ins.
+You get JSON with: the period (one day or a week), profile, daily targets, each day's food entries
+(with ingredient breakdowns where known), workouts, steps and weigh-ins.
+Entries with "status":"planned" are meals planned but not eaten yet. For a single day, review the day as
+it will be if the plan is followed, and say whether the plan lands on the calorie and protein targets and
+what one or two swaps would get it closer.
 
 Write a short, specific review:
 - Base every point on the actual foods and numbers in the log. Name the foods. Use numbers.
@@ -274,14 +278,15 @@ Deno.serve(async (req) => {
         return json({ ...checkWorkout(out), description: note || null });
       }
       case "review": {
-        // Last 7 days ending `today` (a local YYYY-MM-DD date sent by the app)
+        // `days` days ending `today` (a local YYYY-MM-DD date sent by the app). 1 = one day, including planned meals.
         const today: string = body.today;
         if (!/^\d{4}-\d{2}-\d{2}$/.test(today ?? "")) throw new HttpError(400, "review needs today as YYYY-MM-DD.");
-        const start = new Date(Date.parse(today + "T00:00:00Z") - 6 * 86_400_000).toISOString().slice(0, 10);
+        const days = Math.min(14, Math.max(1, Math.round(Number(body.days) || 7)));
+        const start = new Date(Date.parse(today + "T00:00:00Z") - (days - 1) * 86_400_000).toISOString().slice(0, 10);
         const [prof, foods, targets, works, steps, weights] = await Promise.all([
           supabase.from("profile").select("sex, birth_date, height_cm, target_bf_pct, protein_g_per_kg").maybeSingle(),
-          supabase.from("food_logs").select("eaten_on, meal, description, grams, kcal, protein_g, carbs_g, fat_g, fiber_g, items")
-            .gte("eaten_on", start).lte("eaten_on", today).order("eaten_on").order("eaten_at"),
+          supabase.from("food_logs").select("eaten_on, meal, description, grams, kcal, protein_g, carbs_g, fat_g, fiber_g, items, status")
+            .in("status", days === 1 ? ["eaten", "planned"] : ["eaten"]).gte("eaten_on", start).lte("eaten_on", today).order("eaten_on").order("eaten_at"),
           supabase.from("daily_targets").select("for_date, kcal, protein_g, carbs_g, fat_g").gte("for_date", start).lte("for_date", today),
           supabase.from("workouts").select("done_on, type, description, duration_s, kcal_used, avg_hr, training_load")
             .gte("done_on", start).lte("done_on", today),
@@ -289,8 +294,11 @@ Deno.serve(async (req) => {
           supabase.from("body_metrics").select("measured_on, weight_kg, body_fat_pct").gte("measured_on", start).lte("measured_on", today),
         ]);
         for (const r of [prof, foods, targets, works, steps, weights]) if (r.error) throw new HttpError(500, r.error.message);
-        if (!foods.data?.length) throw new HttpError(422, "No meals logged in the last 7 days to review.");
+        if (!foods.data?.length) {
+          throw new HttpError(422, days === 1 ? "Nothing logged or planned for that day yet." : `No meals logged in the last ${days} days to review.`);
+        }
         const week = {
+          period: days === 1 ? "one day" : `${days} days`,
           from: start, to: today,
           profile: prof.data,
           targets: targets.data, food: foods.data, workouts: works.data, steps: steps.data, weigh_ins: weights.data,
