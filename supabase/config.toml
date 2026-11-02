@@ -423,3 +423,6 @@ verify_jwt = false
 
 [functions.coach]
 verify_jwt = false
+
+[functions.hc]
+verify_jwt = false

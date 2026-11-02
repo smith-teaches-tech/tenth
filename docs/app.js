@@ -2177,7 +2177,7 @@ async function renderSettings(view) {
   ]);
 
   // Health Connect
-  const endpoint = `${SUPABASE_URL}/rest/v1/rpc/hc_ingest`;
+  const endpoint = `${SUPABASE_URL}/functions/v1/hc`;
   const hcBox = h("div", { class: "stack" });
   const copyRow = (lbl, value) => h("div", {},
     h("label", {}, lbl),
@@ -2185,11 +2185,9 @@ async function renderSettings(view) {
       h("input", { value, readonly: true, onclick: (e) => e.target.select() }),
       h("button", { class: "chip", onclick: async () => { try { await navigator.clipboard.writeText(value); toast("Copied"); } catch { toast("Select and copy it instead", true); } } }, "Copy")));
   const showSetup = (token) => fill(hcBox,
-    h("div", { class: "note small" }, "In HC Webhook, add a webhook with these. The token is shown once; make a new one if you lose it."),
-    copyRow("Webhook URL", endpoint),
-    copyRow("Header: apikey", SUPABASE_KEY),
-    copyRow("Header: x-tenth-token", token),
-    h("div", { class: "small muted" }, "Turn on steps, exercise, heart rate, active calories, distance, sleep and oxygen saturation, and sync every 30–60 minutes."));
+    h("div", { class: "note small" }, "In Health Connect Webhook, add a webhook with just this URL. No headers needed; the token is in the link. It's shown once, so make a new one if you lose it."),
+    copyRow("Webhook URL", `${endpoint}?token=${token}`),
+    h("div", { class: "small muted" }, "Choose JSON if asked. Turn on steps, exercise, heart rate, active calories, distance, sleep and oxygen saturation, and sync every 30–60 minutes."));
   const newToken = h("button", { class: "btn secondary" }, tok ? "Make a new token" : "Set up automatic sync");
   newToken.addEventListener("click", () => busy(newToken, async () => {
     const bytes = crypto.getRandomValues(new Uint8Array(24));
