@@ -5,7 +5,8 @@ Handoff notes for the next chat. Setup steps are in `README.md`; this file is th
 ## What it is
 
 Michael's phone app (Android, installed as a PWA from Chrome) for getting to 10% body fat.
-- App: plain HTML/CSS/ES-module JS in `docs/`, served by GitHub Pages (repo smith-teaches-tech, `/docs` folder). supabase-js from the jsdelivr CDN. Service worker cache `tenth-shell-v2` (bump the name when the shell changes).
+- App: plain HTML/CSS/ES-module JS in `docs/`, served by GitHub Pages (repo smith-teaches-tech, `/docs` folder). supabase-js from the jsdelivr CDN. Service worker cache `tenth-shell-v3` (bump the name when the shell changes).
+- Logo: "Missing Tenth" (a 1 beside a ring with one tenth sliced out, mint on near-black, white slice). Files in `docs/icons`: `icon.svg`, `mark.svg` (top-bar badge, no tile), `icon-192/512.png`, `icon-maskable-512.png`, `apple-touch-icon.png`.
 - Backend: free Supabase project `vmuebcyjdtdxmlyqrfox` (hobby org). Publishable key is in `docs/config.js`.
 - AI: Claude API is primary (`claude-sonnet-5-5` smart, `claude-haiku-5-5` fast); Gemini free tier is the backup (3.8-flash → 3.6-flash → 3.5-flash-lite). Keys are Supabase secrets only, never in chat or files.
 - Code lives on the Mac at `/Users/michaelsmith/Documents/tenth` (linked to Claude through the desktop app). Copies of the main files are saved in the claude.ai Project docs.
@@ -25,7 +26,7 @@ Michael's phone app (Android, installed as a PWA from Chrome) for getting to 10%
 | plan function | `supabase/functions/plan/index.ts` | Math targets, no AI: Mifflin-St Jeor × activity, adaptive TDEE from weight trend (14→28 days), missed-meal fill-in, steps adjustment, deficit from loss rate capped at 25% of burn, protein/fat per kg, carbs fill. `save:false` returns the goal timeline only |
 | coach function | `supabase/functions/coach/index.ts` | Chat with tiered memory (14 days detailed, 15–90 daily, older weekly/monthly), tools get_day / search_meals / get_range / propose_memory. Asks "Remember this?" before saving a note |
 | hc function | `supabase/functions/hc/index.ts` | Receives Health Connect Webhook POSTs (token in `?token=` or `x-tenth-token` header) and calls the `hc_ingest` database function |
-| Migrations | `supabase/migrations/` | `20261101120000_init`, `20261101150000_planned_meals_and_measurements`, `20261101170000_ai_targets`, `20261102120000_health_connect_and_coach`, `20261102190000_ignore_test_data` |
+| Migrations | `supabase/migrations/` | `20261101120000_init`, `20261101150000_planned_meals_and_measurements`, `20261101170000_ai_targets`, `20261102120000_health_connect_and_coach`, `20261102190000_ignore_test_data`, `20261102200000_running_totals` |
 
 All four functions have `verify_jwt = false` in `supabase/config.toml`; they check sign-in (or the token) themselves.
 
@@ -52,6 +53,10 @@ Xiaomi Smart Band 10 → Mi Fitness → Health Connect → Health Connect Webhoo
 Michael's next steps: `supabase db push` → commit and push → in the app, + → Redo today's targets (today's target was inflated by the fake run). Use Sync now in the webhook app, not Test.
 
 ## Open items
+
+- `20261102190000_ignore_test_data` is now applied on the live database (Michael ran `supabase db push` 2 Nov evening).
+- Double counting fixed in `20261102200000_running_totals` (needs `supabase db push`): the webhook sends today's steps, active calories and distance as one running total ("local midnight to now") on every sync, each with a new end time, and `hc_rollup_days` summed every copy (1,800 + 1,800 = 3,600). It now skips any record a longer same-kind record fully covers, then recomputes the last 3 days. Tested locally: repeat totals count once, a bigger later total replaces it, separate hourly records still add up.
+- Steps: Health Connect Webhook sends one combined steps total per day (no app name attached). On 2 Nov it sent 1,800 while Mi Fitness showed 9,250, and no sleep, while heart rate and SpO2 did arrive. So Health Connect itself only had 1,800: either Mi Fitness isn't allowed to write Steps and Sleep, or another source (phone/Google Fit) outranks it. Check Health Connect → App permissions → Mi Fitness (Steps, Sleep, Distance, Active calories all on) and Data and access → Steps → which apps contributed, and put Mi Fitness first in App priority.
 
 - Today's steps and last night's sleep hadn't arrived on 2 Nov. Most likely Mi Fitness hadn't written them to Health Connect yet. Check: open Mi Fitness and let it sync → Health Connect → Data and access shows today's steps and sleep → webhook Sync now. If Health Connect has them but Tenth doesn't, it's a Tenth bug: look at `hc_tokens.last_result` and `hc_records` for that day.
 - Watch the next few syncs for anything else odd (duplicate steps from overlapping records, sleep landing on the wrong day).
