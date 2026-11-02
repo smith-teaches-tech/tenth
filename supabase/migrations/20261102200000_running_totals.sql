@@ -4,6 +4,9 @@
 -- hc_rollup_days now skips any record that a longer record of the same kind fully covers,
 -- so only the latest running total counts. Separate, non-overlapping records still add up as before.
 -- Raw records are kept; nothing is deleted.
+-- Also: steps you type in Tenth (saved with steps_source 'manual') are no longer overwritten by a smaller band
+-- total, e.g. a day when Mi Fitness only started writing to Health Connect in the afternoon. If the band later
+-- reports more steps than you typed, the band number takes over.
 
 create or replace function public.hc_rollup_days(p_user uuid, p_from date, p_to date, p_tz text)
 returns int
@@ -70,9 +73,14 @@ begin
        round(sl.deep / 60), round(sl.rem / 60), round(sl.light / 60), round(sl.awake / 60),
        coalesce(a.resting, v_low), a.spo2, now())
     on conflict (user_id, day) do update set
-      steps        = case when excluded.steps is not null then excluded.steps
+      -- Steps you typed (source 'manual', or older rows with no source) stand unless the band reports more
+      steps        = case when d.steps is not null and coalesce(d.steps_source, 'manual') = 'manual'
+                               and (excluded.steps is null or d.steps >= excluded.steps) then d.steps
+                          when excluded.steps is not null then excluded.steps
                           when d.steps_source = 'health_connect' then null else d.steps end,
-      steps_source = case when excluded.steps is not null then 'health_connect'
+      steps_source = case when d.steps is not null and coalesce(d.steps_source, 'manual') = 'manual'
+                               and (excluded.steps is null or d.steps >= excluded.steps) then 'manual'
+                          when excluded.steps is not null then 'health_connect'
                           when d.steps_source = 'health_connect' then null else d.steps_source end,
       active_kcal  = excluded.active_kcal,
       distance_m   = excluded.distance_m,

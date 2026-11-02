@@ -943,13 +943,13 @@ async function openSteps() {
   save.addEventListener("click", () => busy(save, async () => {
     const n = numOrNull(steps.value);
     if (n == null) throw new Error("Enter your steps.");
-    must(await sb.from("daily_activity").upsert({ day: date.value, steps: Math.round(n) }, { onConflict: "user_id,day" }));
+    must(await sb.from("daily_activity").upsert({ day: date.value, steps: Math.round(n), steps_source: "manual" }, { onConflict: "user_id,day" }));
     closeSheet();
     toast("Steps saved");
     render();
   }));
   openSheet("Steps",
-    h("p", { class: "small muted" }, "End-of-day total from Mi Fitness. The plan compares it to your usual so normal walking isn't counted twice."),
+    h("p", { class: "small muted" }, "Steps come from your band automatically. Type the Mi Fitness total here if the band missed some; your number stays unless the band later shows more. The plan compares steps to your usual so normal walking isn't counted twice."),
     h("div", { class: "grid-2" }, h("div", {}, h("label", {}, "Day"), date), h("div", {}, h("label", {}, "Steps"), steps)),
     h("div", { style: "height:10px" }), save);
 }

@@ -1,7 +1,7 @@
 // Service worker: makes the app installable, keeps the shell available offline,
 // and receives images shared from other apps (Mi Fitness, Gallery) via the Android share sheet.
 
-const CACHE = "tenth-shell-v3";
+const CACHE = "tenth-shell-v4";
 const SHARED = "tenth-shared";
 const SHELL = [
   "./",
