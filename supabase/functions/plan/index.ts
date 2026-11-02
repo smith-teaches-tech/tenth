@@ -323,7 +323,7 @@ Deno.serve(async (req) => {
       supabase.from("body_metrics").select("body_fat_pct").not("body_fat_pct", "is", null)
         .gte("measured_on", addDays(today, -42)).lte("measured_on", today).order("measured_on", { ascending: false }).limit(3),
       supabase.from("food_logs").select("eaten_on, meal, kcal").eq("status", "eaten").gte("eaten_on", start).lte("eaten_on", yesterday),
-      supabase.from("workouts").select("done_on, kcal_used, training_load").gte("done_on", start).lte("done_on", today),
+      supabase.from("workouts").select("done_on, kcal_used, training_load").eq("status", "confirmed").gte("done_on", start).lte("done_on", today),
       supabase.from("daily_activity").select("day, steps").gte("day", start).lte("day", today),
     ]);
     for (const r of [prof, metrics, bfRows, foods, works, steps]) if (r.error) throw r.error;
@@ -381,6 +381,7 @@ Deno.serve(async (req) => {
         notes: plan.notes.join(" "),
         source: "math",   // a fresh plan replaces any AI fine-tuning for the day
         ai_reason: null,
+        created_at: new Date().toISOString(), // when this target was last worked out
       }, { onConflict: "user_id,for_date" });
       if (upErr) throw upErr;
     }

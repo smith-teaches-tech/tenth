@@ -20,6 +20,8 @@
 //     "image": "<base64, no data: prefix>", "mime_type": "image/jpeg",
 //     "note": "ingredients, weights, or what the workout was",
 //     "meal": "breakfast" | "lunch" | "dinner" | "snack", "day": "YYYY-MM-DD" }   (food modes; adds a balance tip)
+//   { "mode": "revise", "items": [...], "note": "it was 200 g chicken, add 1 tbsp oil", "meal": "...", "day": "..." }
+//       re-estimates an existing meal from its items plus your correction
 //   { "mode": "targets", "today": "YYYY-MM-DD", "for_date": "YYYY-MM-DD" }
 //       suggests a macro split for for_date, starting from the math target already saved for it.
 //       Guardrails: calories within 8% of the math, protein never below it, fat 0.6-1.5 g/kg,
@@ -88,6 +90,22 @@ balance_tip: when you are told which meal this is and how the day stands against
 sentence on how this meal fits: for example light on protein for a main meal, or most of the day's
 remaining carbs in a snack. Name a concrete swap or addition with an amount. null if it fits well
 or no day context is given.`;
+
+const REVISE_PROMPT = `You correct an existing meal estimate for a calorie-tracking app.
+
+You get the meal's current items (name, grams, kcal, protein_g, carbs_g, fat_g, fiber_g) and the user's correction.
+Apply the correction and return the full corrected item list:
+- Change only what the correction affects. Keep every other item exactly as it is, numbers included.
+- Weights the user gives are exact (grams_source "stated"); recalculate that item's nutrition for the new weight or food.
+- Add or remove items when the correction says so. Use standard nutrition database values.
+
+Return JSON only, in exactly the same shape as a fresh estimate:
+{"items":[{"name":string,"grams":number,"grams_source":"stated"|"estimated","kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number,"fiber_g":number}],
+ "confidence":"high"|"medium"|"low",
+ "assumptions":[string],
+ "question":null,
+ "balance_tip":string|null}
+balance_tip follows the same rule as before: only when day context is given and the meal sits badly in the day.`;
 
 const LABEL_PROMPT = `Read the nutrition facts label in this image for a calorie-tracking app.
 The label may be in English, Arabic or both; read the numbers, whatever the language.
@@ -381,6 +399,13 @@ function checkWorkout(out: any) {
   };
 }
 
+/** What the coach has been allowed to remember, for every AI answer. */
+async function coachNotes(supabase: any): Promise<string> {
+  const { data, error } = await supabase.from("coach_notes").select("note").order("updated_at", { ascending: false }).limit(60);
+  if (error || !data?.length) return "";
+  return "What you know about this person (saved with their permission):\n" + data.map((n: { note: string }) => `- ${n.note}`).join("\n");
+}
+
 /** What's eaten so far on `day` and that day's target, for the balance tip. */
 async function dayContext(supabase: any, day: string | undefined, meal: string | undefined): Promise<string> {
   const MEALS = ["breakfast", "lunch", "dinner", "snack"];
@@ -409,6 +434,7 @@ async function dayContext(supabase: any, day: string | undefined, meal: string |
   } else {
     lines.push("No calorie target is set for today.");
   }
+  lines.push(await coachNotes(supabase));
   return lines.filter(Boolean).join("\n");
 }
 
@@ -454,6 +480,17 @@ Deno.serve(async (req) => {
         const out = await ask([{ text: FOOD_PROMPT }, { text: `No photo. User's note: ${note}\n\n${ctx}` }], "smart");
         return json(checkFood(out));
       }
+      case "revise": {
+        const items = Array.isArray(body.items) ? body.items.slice(0, 40) : [];
+        if (!items.length) throw new HttpError(400, "revise needs the meal's current items.");
+        if (!note) throw new HttpError(400, "Say what to change.");
+        const ctx = await dayContext(supabase, body.day, body.meal);
+        const out = await ask([
+          { text: REVISE_PROMPT },
+          { text: `Current items:\n${JSON.stringify(items)}\n\nCorrection: ${note}\n\n${ctx}` },
+        ], "smart");
+        return json(checkFood(out));
+      }
       case "label": {
         if (!image) throw new HttpError(400, "label needs an image.");
         const out = await ask([{ text: LABEL_PROMPT }, ...imagePart], "fast");
@@ -475,7 +512,7 @@ Deno.serve(async (req) => {
           supabase.from("body_metrics").select("measured_on, weight_kg, body_fat_pct").lte("measured_on", today).order("measured_on", { ascending: false }).limit(14),
           supabase.from("food_logs").select("eaten_on, kcal, protein_g, carbs_g, fat_g").eq("status", "eaten").gte("eaten_on", start).lte("eaten_on", today),
           supabase.from("daily_targets").select("for_date, kcal, protein_g, carbs_g, fat_g").gte("for_date", start).lte("for_date", today),
-          supabase.from("workouts").select("done_on, type, description, duration_s, kcal_used, training_load").gte("done_on", start).lte("done_on", today),
+          supabase.from("workouts").select("done_on, type, description, duration_s, kcal_used, training_load").eq("status", "confirmed").gte("done_on", start).lte("done_on", today),
           supabase.from("daily_activity").select("day, steps").gte("day", start).lte("day", today),
         ]);
         for (const r of [target, prof, weight, foods, targets, works, steps]) if (r.error) throw new HttpError(500, r.error.message);
@@ -502,7 +539,8 @@ Deno.serve(async (req) => {
           profile: prof.data, weight_kg: kg, weigh_ins: weight.data, last_7_days: days,
           workouts: works.data, steps: steps.data,
         };
-        const out = await ask([{ text: TARGETS_PROMPT }, { text: JSON.stringify(input) }], "smart");
+        const memory = await coachNotes(supabase);
+        const out = await ask([{ text: TARGETS_PROMPT }, { text: JSON.stringify(input) + (memory ? "\n\n" + memory : "") }], "smart");
 
         // Guardrails: the math sets the frame; the AI only reshapes inside it
         const notes: string[] = [];
@@ -541,7 +579,7 @@ Deno.serve(async (req) => {
           supabase.from("food_logs").select("eaten_on, meal, description, grams, kcal, protein_g, carbs_g, fat_g, fiber_g, items, status")
             .in("status", days === 1 ? ["eaten", "planned"] : ["eaten"]).gte("eaten_on", start).lte("eaten_on", today).order("eaten_on").order("eaten_at"),
           supabase.from("daily_targets").select("for_date, kcal, protein_g, carbs_g, fat_g").gte("for_date", start).lte("for_date", today),
-          supabase.from("workouts").select("done_on, type, description, duration_s, kcal_used, avg_hr, training_load")
+          supabase.from("workouts").select("done_on, type, description, duration_s, kcal_used, avg_hr, training_load").eq("status", "confirmed")
             .gte("done_on", start).lte("done_on", today),
           supabase.from("daily_activity").select("day, steps").gte("day", start).lte("day", today),
           supabase.from("body_metrics").select("measured_on, weight_kg, body_fat_pct").gte("measured_on", start).lte("measured_on", today),
@@ -556,7 +594,8 @@ Deno.serve(async (req) => {
           profile: prof.data,
           targets: targets.data, food: foods.data, workouts: works.data, steps: steps.data, weigh_ins: weights.data,
         };
-        const out = await ask([{ text: REVIEW_PROMPT }, { text: JSON.stringify(week) }], "smart");
+        const notes = await coachNotes(supabase);
+        const out = await ask([{ text: REVIEW_PROMPT }, { text: JSON.stringify(week) + (notes ? "\n\n" + notes : "") }], "smart");
         return json({
           summary: out.summary ?? "",
           wins: Array.isArray(out.wins) ? out.wins.slice(0, 2) : [],
@@ -565,7 +604,7 @@ Deno.serve(async (req) => {
         });
       }
       default:
-        throw new HttpError(400, "mode must be food_photo, food_text, label, workout, targets or review.");
+        throw new HttpError(400, "mode must be food_photo, food_text, revise, label, workout, targets or review.");
     }
   } catch (e) {
     const status = e instanceof HttpError ? e.status : 500;

@@ -420,3 +420,6 @@ verify_jwt = false
 
 [functions.plan]
 verify_jwt = false
+
+[functions.coach]
+verify_jwt = false
