@@ -1,7 +1,7 @@
 // Service worker: makes the app installable, keeps the shell available offline,
 // and receives images shared from other apps (Mi Fitness, Gallery) via the Android share sheet.
 
-const CACHE = "tenth-shell-v2";
+const CACHE = "tenth-shell-v3";
 const SHARED = "tenth-shared";
 const SHELL = [
   "./",
@@ -12,6 +12,9 @@ const SHELL = [
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
+  "./icons/icon.svg",
+  "./icons/mark.svg",
+  "./icons/apple-touch-icon.png",
 ];
 
 self.addEventListener("install", (event) => {

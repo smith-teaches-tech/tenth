@@ -45,8 +45,8 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   backdrop-filter: blur(8px);
 }
-.brand { font-weight: 800; letter-spacing: 0.01em; }
-.brand::before { content: "10"; color: var(--accent-ink); background: var(--accent); border-radius: 7px; padding: 2px 6px; margin-right: 8px; font-size: 13px; }
+.brand { display: inline-flex; align-items: center; font-weight: 800; letter-spacing: 0.01em; }
+.brand::before { content: ""; width: 32px; height: 22px; margin-right: 8px; background: url("icons/mark.svg") center / contain no-repeat; }
 
 .view { padding: 0 16px; max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
 .screen-title { font-size: 24px; font-weight: 800; margin: 4px 0 2px; }
