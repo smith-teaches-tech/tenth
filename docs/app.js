@@ -1541,6 +1541,7 @@ async function renderToday(view) {
         class: "btn secondary",
         onclick: (ev) => busy(ev.currentTarget, async () => {
           must(await sb.from("workouts").update({ status: "dismissed" }).eq("id", w.id));
+          await workoutChanged(w);
           toast("Dismissed"); render();
         }),
       }, "Not a workout"))));
@@ -1687,6 +1688,24 @@ function openSaveMealGroup(slot, entries) {
     h("label", {}, "Name"), name, h("div", { style: "height:10px" }), save);
 }
 
+/** Recalculate today's target from yesterday's data (after correcting yesterday's workouts, say). */
+async function recalcToday({ quiet = false } = {}) {
+  const t = today();
+  const cur = must(await sb.from("daily_targets").select("source").eq("for_date", t).maybeSingle());
+  if (cur?.source === "ai" && quiet) return; // keep an AI-tuned target unless asked directly
+  await callFn("plan", { today: addDays(t, -1), for_date: t });
+  state.goal = null;
+  if (!quiet) toast("Today's targets recalculated");
+}
+
+/** A workout on yesterday (or today, for tomorrow's target) changed: keep the affected target in step. */
+async function workoutChanged(w) {
+  const t = today();
+  try {
+    if (w.done_on === addDays(t, -1)) await recalcToday({ quiet: true });
+  } catch { /* the Targets button can still redo it */ }
+}
+
 /** Label, describe or correct a workout (including ones the band detected). */
 function openWorkoutEdit(w) {
   const type = h("input", { value: w.status === "suggested" ? "" : w.type, placeholder: "e.g. CrossFit" });
@@ -1701,6 +1720,7 @@ function openWorkoutEdit(w) {
     const row = { type: type.value.trim(), description: desc.value.trim() || null, status: "confirmed" };
     if (k != null && k !== Number(w.kcal_used)) { row.kcal_used = Math.round(k); row.kcal_locked = true; }
     must(await sb.from("workouts").update(row).eq("id", w.id));
+    await workoutChanged(w);
     closeSheet(); toast("Workout saved"); render();
   }));
   openSheet(w.status === "suggested" ? "What was it?" : w.type,
@@ -1716,6 +1736,7 @@ function openWorkoutEdit(w) {
       class: "btn danger",
       onclick: (ev) => busy(ev.currentTarget, async () => {
         must(await sb.from("workouts").update({ status: "dismissed" }).eq("id", w.id));
+        await workoutChanged(w);
         closeSheet(); toast("Workout removed"); render();
       }),
     }, "Remove workout") : null);
@@ -1742,7 +1763,8 @@ function openAddSheet() {
     h("div", { class: "add-group" }, "Body and targets"),
     h("div", { class: "add-grid" },
       opt("scale", "Weigh-in", () => openWeighIn()),
-      opt("target", "Tomorrow's targets", (e) => runPlan(e.currentTarget))));
+      opt("target", "Redo today's targets", (e) => busy(e.currentTarget, async () => { await recalcToday(); closeSheet(); render(); })),
+      opt("calendar", "Tomorrow's targets", (e) => runPlan(e.currentTarget))));
 }
 
 // ---------------------------------------------------------------------------

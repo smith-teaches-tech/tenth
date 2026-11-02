@@ -35,6 +35,7 @@ Band → Mi Fitness → Health Connect → Health Connect Webhook (free APK from
 2. Tenth → Settings → Band data → Set up automatic sync: copy the webhook URL (it includes your token) into a new webhook in Health Connect Webhook. No headers needed.
 3. In HC Webhook, enable steps, exercise, heart rate, active calories, distance, sleep and oxygen saturation; sync every 30–60 minutes.
 4. On Xiaomi phones, set Mi Fitness and HC Webhook to Autostart on and Battery saver: No restrictions.
+5. Use Sync now to send real data. The webhook app's Test button sends made-up sample data marked `"test": true`; Tenth only checks the token and stores none of it.
 
 ## Notes
 
