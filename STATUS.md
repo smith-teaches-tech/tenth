@@ -5,7 +5,7 @@ Handoff notes for the next chat. Setup steps are in `README.md`; this file is th
 ## What it is
 
 Michael's phone app (Android, installed as a PWA from Chrome) for getting to 10% body fat.
-- App: plain HTML/CSS/ES-module JS in `docs/`, served by GitHub Pages (repo smith-teaches-tech, `/docs` folder). supabase-js from the jsdelivr CDN. Service worker cache `tenth-shell-v4` (bump the name when the shell changes).
+- App: plain HTML/CSS/ES-module JS in `docs/`, served by GitHub Pages (repo smith-teaches-tech, `/docs` folder). supabase-js from the jsdelivr CDN. Service worker cache `tenth-shell-v5` (bump the name when the shell changes).
 - Logo: "Missing Tenth" (a 1 beside a ring with one tenth sliced out, mint on near-black, white slice). Files in `docs/icons`: `icon.svg`, `mark.svg` (top-bar badge, no tile), `icon-192/512.png`, `icon-maskable-512.png`, `apple-touch-icon.png`.
 - Backend: free Supabase project `vmuebcyjdtdxmlyqrfox` (hobby org). Publishable key is in `docs/config.js`.
 - AI: Claude API is primary (`claude-sonnet-5-5` smart, `claude-haiku-5-5` fast); Gemini free tier is the backup (3.8-flash → 3.6-flash → 3.5-flash-lite). Keys are Supabase secrets only, never in chat or files.
@@ -32,7 +32,7 @@ All four functions have `verify_jwt = false` in `supabase/config.toml`; they che
 
 ## UI (design "D")
 
-Mockups are on the Design canvas artifact (boards A, B, C, Coach, Combined = D, Goal). Today screen = goal strip, calorie ring, recovery tiles (sleep, resting HR, steps), cards for unlogged band sessions, then a timeline of meals grouped by slot (breakfast, lunch, dinner, snack). Michael splits meals into several entries so they're easy to reuse; saved meals have categories. + sheet groups: Food (Saved, Photo, Type, Scan, Plan meals), Activity (Workout, Steps), Body and targets (Weigh-in, Redo today's targets, Tomorrow's targets).
+Mockups are on the Design canvas artifact (boards A, B, C, Coach, Combined = D, Goal). Today screen = goal strip, calorie ring, in the evening (from 18:00, or once dinner is logged) a "Tomorrow" card, recovery tiles (sleep, resting HR, steps), cards for unlogged band sessions, then a timeline of meals grouped by slot (breakfast, lunch, dinner, snack). Michael splits meals into several entries so they're easy to reuse; saved meals have categories. + sheet groups: Food (Saved, Photo, Type, Scan, Plan meals), Activity (Workout, Steps), Body and targets (Weigh-in, Redo today's targets, Tomorrow's targets).
 
 ## Band data
 
@@ -51,6 +51,13 @@ Xiaomi Smart Band 10 → Mi Fitness → Health Connect → Health Connect Webhoo
 2. `docs/app.js`: "Redo today's targets" in the + sheet, and targets recalc when yesterday's workouts change.
 
 Michael's next steps: `supabase db push` → commit and push → in the app, + → Redo today's targets (today's target was inflated by the fake run). Use Sync now in the webhook app, not Test.
+
+## Tomorrow card (2 Nov, needs push)
+
+- `tomorrowCard` / `refreshTomorrow` in `docs/app.js`: shows tomorrow's saved target with Plan meals (meal planner for tomorrow) and Details (the existing `runPlan` sheet with the breakdown and AI fine-tune). A math target older than 30 minutes is re-saved in the background (at most every 5 minutes), so it follows the evening's steps and workouts; an AI-tuned target is never touched.
+- `ensureTodayTarget`: a math target worked out before the day began (evening card or + → Tomorrow's targets) is redone once on the first open of the day, with yesterday complete. AI-tuned targets are kept.
+- The target has to be saved (not a save:false preview) because the meal planner, Food → Plan ahead and AI fine-tune all read the saved row.
+- Tested with Playwright and a fake supabase module: no card at 15:30; card at 19:30 and at 17:40 with dinner logged (one save call, then redraw); AI-tuned kept; morning recompute only for an evening-made math target.
 
 ## Open items
 

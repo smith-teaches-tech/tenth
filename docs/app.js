@@ -1445,7 +1445,11 @@ async function ensureTodayTarget(target, yesterdayWorkoutsChangedAt) {
   if (state.autoTarget[t] === "busy" || !state.profile) return false;
   const stale = target && target.source === "math" && yesterdayWorkoutsChangedAt && yesterdayWorkoutsChangedAt > target.created_at
     && state.autoTarget[t + ":stale"] !== yesterdayWorkoutsChangedAt;
-  if (target && !stale) return false;
+  // Worked out before today began (the evening card or Tomorrow's targets): redo it now that yesterday is complete
+  const early = target && target.source === "math" && new Date(target.created_at) < new Date(t + "T00:00:00")
+    && !state.autoTarget[t + ":early"];
+  if (target && !stale && !early) return false;
+  if (early) state.autoTarget[t + ":early"] = true;
   if (!target && state.autoTarget[t] === "done") return false;
   if (stale) state.autoTarget[t + ":stale"] = yesterdayWorkoutsChangedAt;
   state.autoTarget[t] = "busy";
@@ -1461,12 +1465,49 @@ async function ensureTodayTarget(target, yesterdayWorkoutsChangedAt) {
   }
 }
 
+/** Evening card on Today: tomorrow's target, kept up to date as today's steps and workouts come in. */
+function tomorrowCard(d, tg) {
+  const tm = addDays(d, 1);
+  const fresh = tg && (tg.source === "ai" || Date.now() - new Date(tg.created_at).getTime() < 30 * 60000);
+  if (!fresh) refreshTomorrow(d);
+  const err = state.tomorrowErr?.[d];
+  return h("section", { class: "card tomorrow", "aria-label": "Tomorrow's target" },
+    h("div", { class: "row" },
+      h("b", {}, "Tomorrow"),
+      tg?.source === "ai" ? h("span", { class: "badge" }, "AI-tuned")
+        : h("span", { class: "small muted" }, "updates tonight · set in the morning")),
+    tg ? h("div", { class: "tomorrow-nums" },
+      h("span", { class: "tomorrow-kcal num" }, `${tg.kcal.toLocaleString()} kcal`),
+      h("span", { class: "small muted num" }, `P ${tg.protein_g} · C ${tg.carbs_g} · F ${tg.fat_g}`))
+      : h("div", { class: "small muted" }, err || "Working out tomorrow's target…"),
+    h("div", { class: "row" },
+      h("button", { class: "btn", onclick: (ev) => busy(ev.currentTarget, () => openMealPlanner(tm)) }, "Plan meals"),
+      h("button", { class: "btn secondary", onclick: (ev) => runPlan(ev.currentTarget) }, "Details")));
+}
+
+/** Recalculate and save tomorrow's math target in the background, then redraw Today. */
+async function refreshTomorrow(d) {
+  state.tomorrowCalc ??= {};
+  state.tomorrowErr ??= {};
+  const last = state.tomorrowCalc[d];
+  if (last === "busy" || (last && Date.now() - last < 5 * 60000)) return;
+  state.tomorrowCalc[d] = "busy";
+  try {
+    await callFn("plan", { today: d, for_date: addDays(d, 1) });
+    delete state.tomorrowErr[d];
+  } catch (e) {
+    state.tomorrowErr[d] = /weigh-in|profile/i.test(e.message) ? e.message : "Tomorrow's target isn't available right now. Try Details.";
+  }
+  state.tomorrowCalc[d] = Date.now();
+  if (state.tab === "today" && state.day === d) render();
+}
+
 async function renderToday(view) {
   const d = state.day;
   const t = today();
   const isToday = d === t;
   const yday = addDays(d, -1);
-  const [logs, works, target, metric, act, sleepRec, yWorks, recent] = await Promise.all([
+  const [logs, works, target, metric, act, sleepRec, yWorks, recent, nextTarget] = await Promise.all([
     sb.from("food_logs").select("*").eq("eaten_on", d).order("eaten_at"),
     sb.from("workouts").select("*").eq("done_on", d).neq("status", "dismissed").order("started_at"),
     sb.from("daily_targets").select("*").eq("for_date", d).maybeSingle(),
@@ -1478,6 +1519,7 @@ async function renderToday(view) {
     sb.from("workouts").select("created_at").eq("done_on", yday).order("created_at", { ascending: false }).limit(1),
     // the last week of logs, for "Same as yesterday?"
     sb.from("food_logs").select("*").eq("status", "eaten").gte("eaten_on", addDays(d, -7)).lt("eaten_on", d).order("eaten_on", { ascending: false }),
+    sb.from("daily_targets").select("*").eq("for_date", addDays(d, 1)).maybeSingle(),
   ]).then((rs) => rs.map(must));
 
   if (isToday && await ensureTodayTarget(target, yWorks[0]?.created_at)) return renderToday(view);
@@ -1632,10 +1674,14 @@ async function renderToday(view) {
       h("span", { class: `tl-dot ${n.dot}` }),
       n.el)));
 
+  // Evening: tomorrow's target, so you can plan tomorrow's food tonight
+  const evening = isToday && (new Date().getHours() >= 18 || logs.some((e) => e.meal === "dinner" && !isPlannedE(e)));
+
   fill(view,
     nav,
     goalStrip,
     ringCard,
+    evening ? tomorrowCard(d, nextTarget) : null,
     strip,
     ...unlogged,
     metric ? h("button", { class: "chip num", style: "align-self:flex-start", onclick: openWeighIn },
