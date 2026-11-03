@@ -171,7 +171,7 @@ async function buildContext(sb: Sb, today: string): Promise<string> {
     sb.from("daily_targets").select("kcal, protein_g, carbs_g, fat_g, source, ai_reason, notes").eq("for_date", today).maybeSingle(),
     sb.from("food_logs").select("eaten_on, meal, status, description, kcal, protein_g, carbs_g, fat_g, items").gte("eaten_on", d14).lte("eaten_on", addDays(today, 7)).order("eaten_on").order("eaten_at"),
     sb.from("workouts").select("done_on, type, description, duration_s, kcal_used, avg_hr, max_hr, training_load, status, source").gte("done_on", d14).neq("status", "dismissed").order("done_on"),
-    sb.from("daily_activity").select("day, steps, sleep_min, deep_min, rem_min, low_hr").gte("day", d14).order("day"),
+    sb.from("daily_activity").select("day, steps, sleep_min, deep_min, rem_min, low_hr, sleep_hr").gte("day", d14).order("day"),
     sb.from("body_metrics").select("measured_on, weight_kg, body_fat_pct, waist_cm, neck_cm, chest_cm, arm_cm, thigh_cm, hip_cm").gte("measured_on", d90).order("measured_on"),
     sb.from("daily_targets").select("for_date, kcal, protein_g").gte("for_date", d14).lte("for_date", today).order("for_date"),
     sb.from("daily_summary").select("*").gte("day", d90).lt("day", d14).order("day"),
@@ -217,7 +217,8 @@ async function buildContext(sb: Sb, today: string): Promise<string> {
     if (tg) head.push(`target ${tg.kcal} kcal P${tg.protein_g}`);
     if (a?.steps != null) head.push(`${a.steps} steps`);
     if (a?.sleep_min != null) head.push(`slept ${(a.sleep_min / 60).toFixed(1)} h (deep ${a.deep_min ?? "?"} min, REM ${a.rem_min ?? "?"} min)`);
-    if (a?.low_hr != null) head.push(`resting HR ${a.low_hr}`);
+    if (a?.sleep_hr != null) head.push(`average HR while asleep ${a.sleep_hr}`);
+    else if (a?.low_hr != null) head.push(`resting HR ${a.low_hr}`);
     if (m) head.push(`weigh-in ${m.weight_kg} kg${m.body_fat_pct != null ? `, ${m.body_fat_pct}% fat` : ""}${m.waist_cm != null ? `, waist ${m.waist_cm}` : ""}`);
     lines.push(head.join(" · "));
     for (const f of fByDay.get(day) ?? []) {

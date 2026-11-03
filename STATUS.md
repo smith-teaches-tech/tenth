@@ -5,7 +5,7 @@ Handoff notes for the next chat. Setup steps are in `README.md`; this file is th
 ## What it is
 
 Michael's phone app (Android, installed as a PWA from Chrome) for getting to 10% body fat.
-- App: plain HTML/CSS/ES-module JS in `docs/`, served by GitHub Pages (repo smith-teaches-tech, `/docs` folder). supabase-js from the jsdelivr CDN. Service worker cache `tenth-shell-v5` (bump the name when the shell changes).
+- App: plain HTML/CSS/ES-module JS in `docs/`, served by GitHub Pages (repo smith-teaches-tech, `/docs` folder). supabase-js from the jsdelivr CDN. Service worker cache `tenth-shell-v6` (bump the name when the shell changes).
 - Logo: "Missing Tenth" (a 1 beside a ring with one tenth sliced out, mint on near-black, white slice). Files in `docs/icons`: `icon.svg`, `mark.svg` (top-bar badge, no tile), `icon-192/512.png`, `icon-maskable-512.png`, `apple-touch-icon.png`.
 - Backend: free Supabase project `vmuebcyjdtdxmlyqrfox` (hobby org). Publishable key is in `docs/config.js`.
 - AI: Claude API is primary (`claude-sonnet-5-5` smart, `claude-haiku-5-5` fast); Gemini free tier is the backup (3.8-flash → 3.6-flash → 3.5-flash-lite). Keys are Supabase secrets only, never in chat or files.
@@ -26,13 +26,13 @@ Michael's phone app (Android, installed as a PWA from Chrome) for getting to 10%
 | plan function | `supabase/functions/plan/index.ts` | Math targets, no AI: Mifflin-St Jeor × activity, adaptive TDEE from weight trend (14→28 days), missed-meal fill-in, steps adjustment, deficit from loss rate capped at 25% of burn, protein/fat per kg, carbs fill. `save:false` returns the goal timeline only |
 | coach function | `supabase/functions/coach/index.ts` | Chat with tiered memory (14 days detailed, 15–90 daily, older weekly/monthly), tools get_day / search_meals / get_range / propose_memory. Asks "Remember this?" before saving a note |
 | hc function | `supabase/functions/hc/index.ts` | Receives Health Connect Webhook POSTs (token in `?token=` or `x-tenth-token` header) and calls the `hc_ingest` database function |
-| Migrations | `supabase/migrations/` | `20261101120000_init`, `20261101150000_planned_meals_and_measurements`, `20261101170000_ai_targets`, `20261102120000_health_connect_and_coach`, `20261102190000_ignore_test_data`, `20261102200000_running_totals` |
+| Migrations | `supabase/migrations/` | `20261101120000_init`, `20261101150000_planned_meals_and_measurements`, `20261101170000_ai_targets`, `20261102120000_health_connect_and_coach`, `20261102190000_ignore_test_data`, `20261102200000_running_totals`, `20261103070000_sleep_hr` |
 
 All four functions have `verify_jwt = false` in `supabase/config.toml`; they check sign-in (or the token) themselves.
 
 ## UI (design "D")
 
-Mockups are on the Design canvas artifact (boards A, B, C, Coach, Combined = D, Goal). Today screen = goal strip, calorie ring, in the evening (from 18:00, or once dinner is logged) a "Tomorrow" card, recovery tiles (sleep, resting HR, steps), cards for unlogged band sessions, then a timeline of meals grouped by slot (breakfast, lunch, dinner, snack). Michael splits meals into several entries so they're easy to reuse; saved meals have categories. + sheet groups: Food (Saved, Photo, Type, Scan, Plan meals), Activity (Workout, Steps), Body and targets (Weigh-in, Redo today's targets, Tomorrow's targets).
+Mockups are on the Design canvas artifact (boards A, B, C, Coach, Combined = D, Goal). Today screen = goal strip, calorie ring, in the evening (from 18:00, or once dinner is logged) a "Tomorrow" card, recovery tiles (sleep, sleep HR, steps), cards for unlogged band sessions, then a timeline of meals grouped by slot (breakfast, lunch, dinner, snack). Michael splits meals into several entries so they're easy to reuse; saved meals have categories. + sheet groups: Food (Saved, Photo, Type, Scan, Plan meals), Activity (Workout, Steps), Body and targets (Weigh-in, Redo today's targets, Tomorrow's targets).
 
 ## Band data
 
@@ -58,6 +58,14 @@ Michael's next steps: `supabase db push` → commit and push → in the app, + �
 - Sleep double count: Mi Fitness wrote last night twice as separate Health Connect records (22:12-02:44 partial, then 22:12-05:27 full, different metadata ids) and the roll-up added both (704 min shown, about 7 h real). Fixed in the same `running_totals` migration (rewritten 3 Nov, still unapplied): overlapping sleep sessions count once, longest wins; separate naps still count. Tested locally with the real stage data: 432 min (deep 120, REM 100, light 212, awake 3).
 - Automatic sync did not run overnight: Supabase logs show `hc` POSTs at 21:26 on 2 Nov, then nothing until Michael's manual syncs at 06:05 and 06:10 on 3 Nov. Interval mode (30 min) produced no calls. Suspects: Health Connect's separate "access data in the background" permission for HC Webhook, or Android deferring WorkManager jobs; Scheduled mode (exact alarms) is the fallback.
 - After the push, 2 Nov steps will show 2,058 (Health Connect only had steps from 4:30pm). Re-enter the day's Mi Fitness total in the Steps sheet with the date set to 2 Nov.
+
+## Sleep HR (3 Nov, needs db push, coach deploy, git push)
+
+- `running_totals` is applied (Michael pushed ~06:45 3 Nov); last night shows 432 min sleep.
+- Overnight heart rate does reach Tenth, but Mi Fitness writes it to Health Connect later than sleep: the 06:10 sync had none, the 06:53 sync brought all 433 readings for 22:12-05:27. The webhook summary's `heart_rate` count is not a count of readings (1 while hundreds arrived).
+- `20261103070000_sleep_hr`: new `daily_activity.sleep_hr` = average HR during the night's main sleep session (overlapping copies deduped, needs 30+ readings). 3 Nov: 48 (Mi Fitness says 48); the old day's-low `low_hr` gave 43 and is kept. Tested locally.
+- Steps lag the same way: at 06:55 Mi Fitness showed about 2,200 while Health Connect had sent 1,701 at 06:53. Tenth shows what Health Connect has; Mi Fitness writes to it in batches.
+- App: Today tile shows "sleep HR" (tap: average while asleep and day's low), falls back to resting HR; Progress → Body "Recovery" chart uses sleep HR. Coach gets "average HR while asleep". Needs `supabase functions deploy coach`.
 
 ## Tomorrow card (2 Nov, needs push)
 

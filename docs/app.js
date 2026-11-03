@@ -1569,7 +1569,9 @@ async function renderToday(view) {
   const strip = h("div", { class: "tiles" },
     tile("moon", act?.sleep_min != null ? minsToHM(act.sleep_min) : "–", "sleep", () => act?.sleep_min != null && toast(
       `Sleep ${minsToHM(act.sleep_min)}${act.deep_min != null ? ` · deep ${minsToHM(act.deep_min)}` : ""}${act.rem_min != null ? ` · REM ${minsToHM(act.rem_min)}` : ""}${act.awake_min ? ` · awake ${act.awake_min} min` : ""}`)),
-    tile("heart", act?.low_hr ?? "–", "resting HR"),
+    act?.sleep_hr != null
+      ? tile("heart", act.sleep_hr, "sleep HR", () => toast(`Average heart rate while asleep: ${act.sleep_hr} bpm${act.low_hr != null ? ` · day's low ${act.low_hr}` : ""}`))
+      : tile("heart", act?.low_hr ?? "–", "resting HR"),
     tile("steps", act?.steps != null ? Number(act.steps).toLocaleString() : "–", "steps", () => openSteps()),
     tile("dumbbell", trained ? r0(trained) : "–", "trained kcal", () => openWorkoutUpload()));
 
@@ -2017,7 +2019,7 @@ async function renderProgress(view) {
   if (seg === "body") {
     const [metrics, acts] = await Promise.all([
       sb.from("body_metrics").select("*").gte("measured_on", addDays(t, -120)).order("measured_on"),
-      sb.from("daily_activity").select("day, low_hr, sleep_min").gte("day", addDays(t, -13)),
+      sb.from("daily_activity").select("day, low_hr, sleep_hr, sleep_min").gte("day", addDays(t, -13)),
     ]).then((rs) => rs.map(must));
     const weights = metrics.map((m) => ({ day: m.measured_on, w: Number(m.weight_kg) }));
     const bfs = metrics.filter((m) => m.body_fat_pct != null).map((m) => ({ day: m.measured_on, w: Number(m.body_fat_pct) }));
@@ -2041,7 +2043,7 @@ async function renderProgress(view) {
               `${m.last - m.first > 0 ? "+" : ""}${r1(m.last - m.first)}`))))) : null,
       h("div", { class: "card" }, h("h3", {}, "Recovery, last 14 days"),
         dayBars(days14, (d) => aByDay.get(d)?.sleep_min != null ? aByDay.get(d).sleep_min / 60 : null, { color: "var(--muted)", label: "Sleep", unit: "h", fmt: (v) => r1(v), targetOf: () => 7 }),
-        dayBars(days14, (d) => aByDay.get(d)?.low_hr ?? null, { color: "var(--fat)", label: "Resting heart rate", unit: "bpm" })),
+        dayBars(days14, (d) => aByDay.get(d)?.sleep_hr ?? aByDay.get(d)?.low_hr ?? null, { color: "var(--fat)", label: "Sleep heart rate", unit: "bpm" })),
       h("button", { class: "btn secondary", onclick: openWeighIn }, "Add a weigh-in"));
     return;
   }
