@@ -52,6 +52,13 @@ Xiaomi Smart Band 10 → Mi Fitness → Health Connect → Health Connect Webhoo
 
 Michael's next steps: `supabase db push` → commit and push → in the app, + → Redo today's targets (today's target was inflated by the fake run). Use Sync now in the webhook app, not Test.
 
+## 3 Nov morning findings
+
+- `20261102200000_running_totals` was still NOT applied on the live database at 06:15 on 3 Nov (needs `supabase db push`). Until it is, every sync re-adds the running totals (2 Nov showed 11,316 = 4 x 1,800 + 2 x 2,058) and overwrites typed steps.
+- Sleep double count: Mi Fitness wrote last night twice as separate Health Connect records (22:12-02:44 partial, then 22:12-05:27 full, different metadata ids) and the roll-up added both (704 min shown, about 7 h real). Fixed in the same `running_totals` migration (rewritten 3 Nov, still unapplied): overlapping sleep sessions count once, longest wins; separate naps still count. Tested locally with the real stage data: 432 min (deep 120, REM 100, light 212, awake 3).
+- Automatic sync did not run overnight: Supabase logs show `hc` POSTs at 21:26 on 2 Nov, then nothing until Michael's manual syncs at 06:05 and 06:10 on 3 Nov. Interval mode (30 min) produced no calls. Suspects: Health Connect's separate "access data in the background" permission for HC Webhook, or Android deferring WorkManager jobs; Scheduled mode (exact alarms) is the fallback.
+- After the push, 2 Nov steps will show 2,058 (Health Connect only had steps from 4:30pm). Re-enter the day's Mi Fitness total in the Steps sheet with the date set to 2 Nov.
+
 ## Tomorrow card (2 Nov, needs push)
 
 - `tomorrowCard` / `refreshTomorrow` in `docs/app.js`: shows tomorrow's saved target with Plan meals (meal planner for tomorrow) and Details (the existing `runPlan` sheet with the breakdown and AI fine-tune). A math target older than 30 minutes is re-saved in the background (at most every 5 minutes), so it follows the evening's steps and workouts; an AI-tuned target is never touched.

@@ -3,6 +3,9 @@
 -- so each sync stored another copy with a later end time and the day's sum grew (1,800 + 1,800 = 3,600).
 -- hc_rollup_days now skips any record that a longer record of the same kind fully covers,
 -- so only the latest running total counts. Separate, non-overlapping records still add up as before.
+-- Sleep: Mi Fitness writes a night more than once (e.g. a partial 22:12-02:44 copy, then the full 22:12-05:27
+-- as a separate record), and both were added up (11 h 44 min for a 7 h night). Sleep sessions that overlap
+-- now count once: the longest one (latest end if equal) wins. Naps that don't overlap the night still count.
 -- Raw records are kept; nothing is deleted.
 -- Also: steps you type in Tenth (saved with steps_source 'manual') are no longer overwritten by a smaller band
 -- total, e.g. a day when Mi Fitness only started writing to Health Connect in the afternoon. If the band later
@@ -53,9 +56,19 @@ begin
                       extract(epoch from (x->>'end_time')::timestamptz - (x->>'start_time')::timestamptz), 0) as secs
       from public.hc_records r, jsonb_array_elements(coalesce(r.extra->'stages', '[]')) x
       where r.user_id = p_user and r.kind = 'sleep' and r.end_at >= v_ds and r.end_at < v_de
+        and not exists (  -- an earlier, partial copy of the same night (see header)
+          select 1 from public.hc_records r2
+          where r2.user_id = r.user_id and r2.kind = 'sleep'
+            and r2.start_at < r.end_at and r2.end_at > r.start_at
+            and (r2.end_at - r2.start_at, r2.end_at) > (r.end_at - r.start_at, r.end_at))
     ), tot as (
-      select sum(value) as secs from public.hc_records
-      where user_id = p_user and kind = 'sleep' and end_at >= v_ds and end_at < v_de
+      select sum(r.value) as secs from public.hc_records r
+      where r.user_id = p_user and r.kind = 'sleep' and r.end_at >= v_ds and r.end_at < v_de
+        and not exists (
+          select 1 from public.hc_records r2
+          where r2.user_id = r.user_id and r2.kind = 'sleep'
+            and r2.start_at < r.end_at and r2.end_at > r.start_at
+            and (r2.end_at - r2.start_at, r2.end_at) > (r.end_at - r.start_at, r.end_at))
     )
     select (select secs from tot) as total,
            sum(secs) filter (where stage like '%DEEP%' or stage = '5') as deep,
