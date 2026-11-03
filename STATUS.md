@@ -26,7 +26,7 @@ Michael's phone app (Android, installed as a PWA from Chrome) for getting to 10%
 | plan function | `supabase/functions/plan/index.ts` | Math targets, no AI: Mifflin-St Jeor × activity, adaptive TDEE from weight trend (14→28 days), missed-meal fill-in, steps adjustment, deficit from loss rate capped at 25% of burn, protein/fat per kg, carbs fill. `save:false` returns the goal timeline only |
 | coach function | `supabase/functions/coach/index.ts` | Chat with tiered memory (14 days detailed, 15–90 daily, older weekly/monthly), tools get_day / search_meals / get_range / propose_memory. Asks "Remember this?" before saving a note |
 | hc function | `supabase/functions/hc/index.ts` | Receives Health Connect Webhook POSTs (token in `?token=` or `x-tenth-token` header) and calls the `hc_ingest` database function |
-| Migrations | `supabase/migrations/` | `20261101120000_init`, `20261101150000_planned_meals_and_measurements`, `20261101170000_ai_targets`, `20261102120000_health_connect_and_coach`, `20261102190000_ignore_test_data`, `20261102200000_running_totals`, `20261103070000_sleep_hr` |
+| Migrations | `supabase/migrations/` | `20261101120000_init`, `20261101150000_planned_meals_and_measurements`, `20261101170000_ai_targets`, `20261102120000_health_connect_and_coach`, `20261102190000_ignore_test_data`, `20261102200000_running_totals`, `20261103070000_sleep_hr`, `20261103080000_workout_fixes` |
 
 All four functions have `verify_jwt = false` in `supabase/config.toml`; they check sign-in (or the token) themselves.
 
@@ -59,7 +59,17 @@ Michael's next steps: `supabase db push` → commit and push → in the app, + �
 - Automatic sync did not run overnight: Supabase logs show `hc` POSTs at 21:26 on 2 Nov, then nothing until Michael's manual syncs at 06:05 and 06:10 on 3 Nov. Interval mode (30 min) produced no calls. Suspects: Health Connect's separate "access data in the background" permission for HC Webhook, or Android deferring WorkManager jobs; Scheduled mode (exact alarms) is the fallback.
 - After the push, 2 Nov steps will show 2,058 (Health Connect only had steps from 4:30pm). Re-enter the day's Mi Fitness total in the Steps sheet with the date set to 2 Nov.
 
-## Sleep HR (3 Nov, needs db push, coach deploy, git push)
+## Workout fixes (3 Nov, needs db push)
+
+- `sleep_hr` is applied (Michael pushed ~07:00 3 Nov).
+- `20261103080000_workout_fixes` (replaces `hc_refresh_workouts` and `hc_ingest`):
+  - Workout burn ignored the fact that Mi Fitness sends active calories as a midnight-to-now running total re-sent every sync; prorating those gave a workout a slice of the whole day from every copy. Only blocks of 3 hours or less (not covered by a longer one) count now; otherwise the Keytel heart-rate estimate is used.
+  - Detection: rests up to 5 minutes (was 3) keep one session; a detected session is stretched when more of its heart rate arrives in a later sync; when the band's own exercise record turns up, a detected session takes the band's start and end. Workouts Michael logged keep their times.
+  - Tested locally: HR over two syncs with a 4-min rest gives one 50-min session; band record retimes it to 16:58-17:52 and confirms it as HIIT; burn 671 kcal from HR; a screenshot-logged workout is left alone.
+- Michael's tests: afternoon workout on 3 Nov (recorded on the band), and a warm-up on 4 Nov he often forgets to record (detection). Check the workouts table and `hc_records` hr afterwards.
+- Detection threshold is max(110, 65% of max HR) = 124 bpm for Michael (max HR 190), 15+ min, 10+ readings.
+
+## Sleep HR (3 Nov, applied; coach deploy and git push pending if not done)
 
 - `running_totals` is applied (Michael pushed ~06:45 3 Nov); last night shows 432 min sleep.
 - Overnight heart rate does reach Tenth, but Mi Fitness writes it to Health Connect later than sleep: the 06:10 sync had none, the 06:53 sync brought all 433 readings for 22:12-05:27. The webhook summary's `heart_rate` count is not a count of readings (1 while hundreds arrived).
