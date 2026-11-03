@@ -207,22 +207,44 @@ function picker(onFile, { camera = true } = {}) {
 
 const sheet = document.getElementById("sheet");
 let sheetCleanup = null;
+let sheetBack = null; // reopens the sheet this one was opened from (✕ and the phone's back gesture go there)
+let sheetGen = 0;     // counts sheets opened, so sub() knows whether its option really opened a new one
 
 function openSheet(title, ...content) {
   closeSheetCleanup();
+  sheetBack = null;
+  sheetGen++;
   document.getElementById("sheet-title").textContent = title;
   fill(document.getElementById("sheet-body"), ...content);
   if (!sheet.open) sheet.showModal();
   document.getElementById("sheet-body").scrollTop = 0;
 }
 function closeSheet() {
+  sheetBack = null;
   closeSheetCleanup();
   if (sheet.open) sheet.close();
+}
+/** Wrap a menu option that opens another sheet, so ✕ on that sheet returns to the menu (`back`) instead of closing. */
+function sub(fn, back) {
+  return async (e) => {
+    const gen = sheetGen;
+    await fn(e);
+    if (sheet.open && sheetGen !== gen) sheetBack = back;
+  };
+}
+/** ✕ or the back gesture: return to the menu this sheet came from, or close if it came from nowhere. */
+function sheetGoBack() {
+  const back = sheetBack;
+  if (!back) return closeSheet();
+  sheetBack = null;
+  closeSheetCleanup();
+  back();
 }
 function closeSheetCleanup() {
   if (sheetCleanup) { const f = sheetCleanup; sheetCleanup = null; f(); }
 }
-document.getElementById("sheet-close").addEventListener("click", closeSheet);
+document.getElementById("sheet-close").addEventListener("click", sheetGoBack);
+sheet.addEventListener("cancel", (e) => { if (sheetBack) { e.preventDefault(); sheetGoBack(); } }); // Android back
 sheet.addEventListener("close", closeSheetCleanup);
 sheet.addEventListener("click", (e) => { if (e.target === sheet) closeSheet(); }); // tap outside
 
@@ -968,7 +990,8 @@ async function runPlan(btn) {
       h("div", { class: "num" }, `Protein ${p.protein_g} g · Carbs ${p.carbs_g} g · Fat ${p.fat_g} g`),
       h("div", { class: "card stack", style: "background:var(--card-2)" },
         line("Everyday burn", `${p.neat_kcal}`),
-        line("+ Workout today", `${p.exercise_kcal}`),
+        line(p.detail?.workout_burn_kcal && p.detail.workout_eat_back_pct < 100
+          ? `+ Workouts (${p.detail.workout_eat_back_pct}% of ${p.detail.workout_burn_kcal})` : "+ Workout today", `${p.exercise_kcal}`),
         p.steps_adjust_kcal ? line(p.steps_adjust_kcal > 0 ? "+ Extra steps" : "− Fewer steps than usual", `${Math.abs(p.steps_adjust_kcal)}`) : null,
         line("− Deficit", `${p.deficit_kcal}`),
         h("div", { class: "small muted" }, `Method: ${p.method}. Trend ${p.detail.trend_kg_per_week ?? "–"} kg/week.`)),
@@ -1169,11 +1192,13 @@ async function dayFeedback(btn, day) {
 // ---------------------------------------------------------------------------
 
 async function openMealPlanner(day = state.day) {
-  const [logs, target, lastTarget, saved] = await Promise.all([
+  const [logs, target, lastTarget, saved, recent] = await Promise.all([
     sb.from("food_logs").select("*").eq("eaten_on", day).order("eaten_at"),
     sb.from("daily_targets").select("*").eq("for_date", day).maybeSingle(),
     sb.from("daily_targets").select("*").lte("for_date", day).order("for_date", { ascending: false }).limit(1).maybeSingle(),
     sb.from("saved_meals").select("*").order("use_count", { ascending: false }).order("name"),
+    // the week before, so each slot can offer last time's dishes one by one
+    sb.from("food_logs").select("*").eq("status", "eaten").gte("eaten_on", addDays(day, -7)).lt("eaten_on", day).order("eaten_on", { ascending: false }),
   ]).then((rs) => rs.map(must));
 
   const tgt = target || lastTarget;
@@ -1208,6 +1233,7 @@ async function openMealPlanner(day = state.day) {
     return h("div", {},
       h("div", { class: "meal-head" }, h("span", {}, slot), h("span", { class: "num" }, es.length ? `${r0(kcal)} kcal` : "")),
       ...es.map((e) => entryRow(e, reopen)),
+      lastTimeBlock(recent, slot, day, es, reopen),
       h("button", { class: "add-slot", onclick: () => openAddToSlot(day, slot, saved, reopen) }, `+ Add ${slot}`));
   });
 
@@ -1502,6 +1528,58 @@ async function refreshTomorrow(d) {
   if (state.tab === "today" && state.day === d) render();
 }
 
+/**
+ * Dishes from the last time you had this meal, each one on its own line: + adds it as is, tapping the name lets you
+ * change the portion first. Dishes already in the meal are left out, so you can add one at a time.
+ * `recent` = eaten logs from the week before `day`, newest first. `have` = what's already in this meal on `day`.
+ * With `collapsed`, shows a one-line "More from yesterday" that opens the list.
+ */
+function lastTimeBlock(recent, slot, day, have, after, collapsed = false) {
+  const prevDay = recent.find((e) => e.meal === slot)?.eaten_on;
+  if (!prevDay) return null;
+  const norm = (x) => (x || "").trim().toLowerCase();
+  const already = new Set(have.map((e) => norm(e.description)));
+  const dishes = recent.filter((e) => e.meal === slot && e.eaten_on === prevDay && !already.has(norm(e.description)));
+  if (!dishes.length) return null;
+  const status = day > today() ? "planned" : "eaten";
+  const when = prevDay === addDays(day, -1) ? "yesterday" : fmtDay(prevDay, { weekday: "long" });
+  const add = async (list) => {
+    must(await sb.from("food_logs").insert(list.map((e) => ({
+      eaten_on: day, meal: slot, description: e.description, grams: e.grams, kcal: e.kcal, protein_g: e.protein_g,
+      carbs_g: e.carbs_g, fat_g: e.fat_g, fiber_g: e.fiber_g, source: "saved", items: e.items, food_id: e.food_id, status,
+    }))));
+    toast(list.length === 1 ? `Added ${list[0].description}` : `${cap(slot)} added: ${r0(sumItems(list).kcal)} kcal`);
+    after();
+  };
+  const plusBtn = (e) => h("button", {
+    class: "icon-btn ghost accent", "aria-label": `Add ${e.description}`,
+    onclick: async (ev) => {
+      const b = ev.currentTarget;
+      b.disabled = true;
+      try { await add([e]); } catch (err) { toast(err.message || String(err), true); b.disabled = false; }
+    },
+  }, icon("plus", 18));
+  const list = h("div", { class: "suggest-list" + (collapsed ? " hidden" : "") },
+    h("div", { class: "suggest-head" },
+      h("span", {}, `${cap(when)}'s ${slot}`),
+      dishes.length > 1 ? h("button", {
+        class: "chip-btn", onclick: (ev) => busy(ev.currentTarget, () => add(dishes)),
+      }, `Add all · ${r0(sumItems(dishes).kcal)}`) : null),
+    ...dishes.map((e) => h("div", { class: "suggest-line" },
+      h("button", {
+        class: "meal-line",
+        onclick: () => openFoodReview({
+          title: e.description, items: entryItems(e), description: e.description, meal: slot, day,
+          source: "saved", status, afterSave: after === render ? null : after,
+        }),
+      }, h("span", { class: "desc" }, e.description), h("span", { class: "num" }, r0(e.kcal))),
+      plusBtn(e))));
+  if (!collapsed) return h("div", { class: "suggest" }, list);
+  const open = h("button", { class: "link small suggest-open" }, `+ More from ${when} (${dishes.length})`);
+  open.addEventListener("click", () => { open.remove(); list.classList.remove("hidden"); });
+  return h("div", { class: "suggest" }, open, list);
+}
+
 async function renderToday(view) {
   const d = state.day;
   const t = today();
@@ -1622,33 +1700,19 @@ async function renderToday(view) {
               h("button", { class: "icon-btn ghost", "aria-label": `Save ${slot} as a meal`, onclick: () => openSaveMealGroup(slot, es) }, icon("star", 18)),
               h("button", { class: "icon-btn ghost accent", "aria-label": `Add to ${slot}`, onclick: () => openAddFood(slot, d) }, icon("plus", 20)))),
           ...es.map((e) => h("button", { class: "meal-line" + (isPlannedE(e) ? " planned" : ""), onclick: () => openEntryActions(e) },
-            h("span", { class: "desc" }, e.description), h("span", { class: "muted num" }, r0(e.kcal))))),
+            h("span", { class: "desc" }, e.description), h("span", { class: "muted num" }, r0(e.kcal)))),
+          // planning ahead: keep last time's dishes open; today: fold them once the meal is eaten
+          d >= t ? lastTimeBlock(recent, slot, d, es, render, d === t && eatenEs.length > 0) : null),
       });
     } else if (d >= t) {
-      // Empty slot: offer the most recent time you had this meal
-      const prevDay = recent.find((e) => e.meal === slot)?.eaten_on;
-      const prev = prevDay ? recent.filter((e) => e.meal === slot && e.eaten_on === prevDay) : [];
-      const pk = sum(prev);
+      // Empty slot: offer the dishes from the last time you had this meal, one by one
       nodes.push({
         sort: SLOT_TIME[slot], time: "—", dot: "planned",
         el: h("div", { class: "meal-card planned" },
           h("div", { class: "meal-card-head" },
             h("b", {}, cap(slot)),
             h("button", { class: "icon-btn ghost accent", "aria-label": `Add to ${slot}`, onclick: () => openAddFood(slot, d) }, icon("plus", 20))),
-          prev.length ? h("div", { class: "row small", style: "padding:0 10px 6px 0" },
-            h("span", { class: "muted" }, `Same as ${prevDay === addDays(d, -1) ? "yesterday" : fmtDay(prevDay, { weekday: "long" })}? `,
-              h("span", { style: "color:var(--text)" }, prev.map((e) => e.description).join(", ")), ` · ${r0(pk.kcal)}`),
-            h("button", {
-              class: "chip-btn",
-              onclick: (ev) => busy(ev.currentTarget, async () => {
-                must(await sb.from("food_logs").insert(prev.map((e) => ({
-                  eaten_on: d, meal: slot, description: e.description, grams: e.grams, kcal: e.kcal, protein_g: e.protein_g,
-                  carbs_g: e.carbs_g, fat_g: e.fat_g, fiber_g: e.fiber_g, source: "saved", items: e.items, food_id: e.food_id,
-                  status: d > t ? "planned" : "eaten",
-                }))));
-                toast(`${cap(slot)} added: ${r0(pk.kcal)} kcal`); render();
-              }),
-            }, "Add")) : null),
+          lastTimeBlock(recent, slot, d, [], render)),
       });
     }
   }
@@ -1712,12 +1776,13 @@ async function renderToday(view) {
 function openAddFood(slot, day = state.day) {
   const status = day > today() ? "planned" : "eaten";
   const ctx = { meal: slot, day, status };
+  const back = () => openAddFood(slot, day);
   openSheet(`Add to ${slot}`,
     h("div", { class: "add-grid" },
-      h("button", { class: "add-option", onclick: () => openSavedPicker(slot, ctx) }, icon("star", 22), "Saved"),
-      h("button", { class: "add-option", onclick: () => openPhotoFood(null, ctx) }, icon("camera", 22), "Photo"),
-      h("button", { class: "add-option", onclick: () => openTypedFood(ctx) }, icon("pencil", 22), "Type"),
-      h("button", { class: "add-option", onclick: () => openScan() }, icon("barcode", 22), "Scan")));
+      h("button", { class: "add-option", onclick: sub(() => openSavedPicker(slot, ctx), back) }, icon("star", 22), "Saved"),
+      h("button", { class: "add-option", onclick: sub(() => openPhotoFood(null, ctx), back) }, icon("camera", 22), "Photo"),
+      h("button", { class: "add-option", onclick: sub(() => openTypedFood(ctx), back) }, icon("pencil", 22), "Type"),
+      h("button", { class: "add-option", onclick: sub(() => openScan(), back) }, icon("barcode", 22), "Scan")));
 }
 
 /** Save every entry in a meal (e.g. a three-part breakfast) as one reusable meal. */
@@ -1792,7 +1857,8 @@ function openWorkoutEdit(w) {
 
 /** The + button: everything you can add, grouped. */
 function openAddSheet() {
-  const opt = (ic, lbl, fn) => h("button", { class: "add-option", onclick: fn }, icon(ic, 22), lbl);
+  // Options that open another sheet come back here on ✕
+  const opt = (ic, lbl, fn, own = false) => h("button", { class: "add-option", onclick: own ? fn : sub(fn, openAddSheet) }, icon(ic, 22), lbl);
   const day = state.tab === "today" ? state.day : today();
   const slot = guessMeal();
   const ctx = { meal: slot, day, status: day > today() ? "planned" : "eaten" };
@@ -1811,7 +1877,7 @@ function openAddSheet() {
     h("div", { class: "add-group" }, "Body and targets"),
     h("div", { class: "add-grid" },
       opt("scale", "Weigh-in", () => openWeighIn()),
-      opt("target", "Redo today's targets", (e) => busy(e.currentTarget, async () => { await recalcToday(); closeSheet(); render(); })),
+      opt("target", "Redo today's targets", (e) => busy(e.currentTarget, async () => { await recalcToday(); closeSheet(); render(); }), true),
       opt("calendar", "Tomorrow's targets", (e) => runPlan(e.currentTarget))));
 }
 
@@ -2218,6 +2284,8 @@ async function renderSettings(view) {
     fat_g_per_kg: p.fat_g_per_kg ?? 0.8,
     activity_factor: p.activity_factor ?? 1.35,
     max_hr: p.max_hr ?? "",
+    workout_kcal_pct: p.workout_kcal_scale != null ? Math.round(p.workout_kcal_scale * 100) : 65,
+    workout_eat_back_pct: p.workout_eat_back_pct ?? 25,
   };
   const field = (key, label, type = "number") =>
     h("div", {}, h("label", {}, label), h("input", {
@@ -2229,11 +2297,15 @@ async function renderSettings(view) {
   const save = h("button", { class: "btn" }, "Save profile");
   save.addEventListener("click", () => busy(save, async () => {
     if (!v.birth_date || !numOrNull(v.height_cm)) throw new Error("Birth date and height are needed.");
+    const kp = Number(v.workout_kcal_pct), eb = Number(v.workout_eat_back_pct);
+    if (!(kp >= 30 && kp <= 150)) throw new Error("Workout calories: use 30 to 150%.");
+    if (!(eb >= 0 && eb <= 100)) throw new Error("Workouts eaten back: use 0 to 100%.");
     const row = {
       sex: v.sex, birth_date: v.birth_date, height_cm: Number(v.height_cm),
       target_bf_pct: Number(v.target_bf_pct), loss_rate_pct: Number(v.loss_rate_pct),
       protein_g_per_kg: Number(v.protein_g_per_kg), fat_g_per_kg: Number(v.fat_g_per_kg),
       activity_factor: Number(v.activity_factor), max_hr: numOrNull(v.max_hr),
+      workout_kcal_scale: kp / 100, workout_eat_back_pct: eb,
       time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     };
     state.profile = must(await sb.from("profile").upsert(row, { onConflict: "user_id" }).select().single());
@@ -2298,6 +2370,8 @@ async function renderSettings(view) {
       h("div", { class: "grid-2" }, field("height_cm", "Height cm"), field("max_hr", "Max heart rate (observed)")),
       h("div", { class: "grid-3" }, field("protein_g_per_kg", "Protein g/kg"), field("fat_g_per_kg", "Fat g/kg"), field("activity_factor", "Daily movement")),
       h("div", { class: "small muted" }, "Daily movement covers life outside logged workouts: 1.2 desk job, 1.35 on your feet some of the day, 1.5 on your feet most of it."),
+      h("div", { class: "grid-2" }, field("workout_kcal_pct", "Workout calories %"), field("workout_eat_back_pct", "Workouts eaten back %")),
+      h("div", { class: "small muted" }, "Workout calories: how much of the heart-rate estimate a band workout counts as; 65% matched Mi Fitness. Changes apply from the next band sync. Eaten back: how much of a day's workouts is added to the next day's target. A burn you type on a workout always wins."),
       h("div", { style: "height:10px" }), save),
     h("div", { class: "card stack" }, h("h3", {}, "Band data (Health Connect)"), hcBox, newToken),
     h("div", { class: "card stack" }, h("h3", {}, "What the coach remembers"),

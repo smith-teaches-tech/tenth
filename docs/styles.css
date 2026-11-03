@@ -288,3 +288,12 @@ video.scanner { width: 100%; border-radius: 12px; background: #000; aspect-ratio
 
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -3px; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Last time's dishes, one per line */
+.suggest { padding: 2px 0 2px; }
+.suggest-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); padding: 4px 4px 2px 0; }
+.suggest-head .chip-btn { min-height: 30px; font-size: 12px; }
+.suggest-line { display: flex; align-items: center; gap: 2px; }
+.suggest-line .meal-line { flex: 1; min-width: 0; color: var(--text-2); padding-right: 4px; }
+.suggest-line .icon-btn { width: 36px; height: 36px; flex: none; }
+.suggest-open { font-size: 12px; padding: 4px 0; }

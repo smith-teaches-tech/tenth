@@ -11,8 +11,11 @@
 // 3. Missed meals: the plan learns which meals you usually log and what they usually come to.
 //    A day with lunch but no dinner gets your typical dinner filled in. Days with nothing
 //    logged are left out. Days still far below your normal after filling are left out too.
-// 4. Tomorrow = everyday burn + today's workout burn (eaten back)
-//               + today's steps vs your 28-day average - deficit.
+// 4. Tomorrow = everyday burn + part of today's workout burn (eaten back; profile.workout_eat_back_pct,
+//               default 25%) + today's steps vs your 28-day average - deficit.
+//    Workout calories from a wrist band are rough (often 20-40% off), so only part is eaten back. The adaptive
+//    burn in step 2 subtracts the same part, so once it takes over the weight trend sets the average and the
+//    percentage only decides how much training days get over rest days.
 //    Deficit comes from the loss rate in your profile (default 0.5% of bodyweight a week; 0.25 to 1.0 allowed).
 // 5. Protein and fat are set per kg of bodyweight; carbs fill the rest.
 // 6. Body fat for the timeline is the average of your last 3 readings, to smooth tape-measure noise.
@@ -45,6 +48,7 @@ export type Profile = {
   protein_g_per_kg: number;
   fat_g_per_kg: number;
   activity_factor: number;
+  workout_eat_back_pct?: number; // share of workout burn added back the next day (0-100, default 25)
 };
 
 export const MEALS = ["breakfast", "lunch", "dinner", "snack"] as const;
@@ -178,6 +182,8 @@ export function makePlan(inp: PlanInput) {
   const age = ageOn(p.birth_date, inp.today);
   const restKcal = bmr(p.sex, weight, p.height_cm, age);
   const formulaNeat = restKcal * p.activity_factor;
+  const eatBack = Math.min(100, Math.max(0, p.workout_eat_back_pct ?? 25)) / 100;
+  const exerciseEaten = inp.todayExercise * eatBack;
 
   // Measured everyday burn, once there is enough data
   const intake = estimateIntake(inp.history);
@@ -191,7 +197,7 @@ export function makePlan(inp: PlanInput) {
   if (intake.counted.length >= MIN_LOGGED_DAYS && trend && weighIns.length >= 8 && trend.spanDays >= 14) {
     const avgIntake = intake.counted.reduce((s, d) => s + d.kcal, 0) / intake.counted.length;
     const avgExercise = inp.history.reduce((s, d) => s + d.exercise, 0) / inp.history.length;
-    const raw = avgIntake - trend.slope * KCAL_PER_KG - avgExercise;
+    const raw = avgIntake - trend.slope * KCAL_PER_KG - avgExercise * eatBack;
     // Backstop against bad logging: keep the measurement within 35% of the formula
     measuredNeat = Math.min(Math.max(raw, formulaNeat * 0.65), formulaNeat * 1.35);
     if (measuredNeat !== raw) notes.push("Measured burn looked off, so it was capped near the formula.");
@@ -229,7 +235,7 @@ export function makePlan(inp: PlanInput) {
     notes.push("Add waist and neck measurements to a weigh-in to get a body fat timeline.");
   }
   // Never cut more than a quarter of the day's burn
-  const dayBurn = neat + inp.todayExercise + stepsAdjust;
+  const dayBurn = neat + exerciseEaten + stepsAdjust;
   if (deficit > dayBurn * 0.25) {
     deficit = dayBurn * 0.25;
     notes.push("Deficit capped at 25% of the day's burn.");
@@ -253,6 +259,9 @@ export function makePlan(inp: PlanInput) {
     notes.push("Fat trimmed to keep some carbs for training.");
   }
 
+  if (inp.todayExercise > 0 && eatBack < 1) {
+    notes.push(`Eating back ${Math.round(eatBack * 100)}% of today's ${Math.round(inp.todayExercise)} kcal of workouts.`);
+  }
   if (inp.todayLoad >= 200 || inp.todayExercise >= 500) {
     notes.push("Hard session today: the extra calories are mostly carbs. Put them around tomorrow's training and keep protein high.");
   }
@@ -263,12 +272,14 @@ export function makePlan(inp: PlanInput) {
     carbs_g: Math.round(carbs),
     fat_g: Math.round(fat),
     neat_kcal: Math.round(neat),
-    exercise_kcal: Math.round(inp.todayExercise),
+    exercise_kcal: Math.round(exerciseEaten),
     steps_adjust_kcal: Math.round(stepsAdjust),
     deficit_kcal: Math.round(deficit),
     method,
     detail: {
       weight_used_kg: Math.round(weight * 10) / 10,
+      workout_burn_kcal: Math.round(inp.todayExercise),
+      workout_eat_back_pct: Math.round(eatBack * 100),
       trend_kg_per_week: trend ? Math.round(trend.slope * 7 * 100) / 100 : null,
       formula_neat_kcal: Math.round(formulaNeat),
       measured_neat_kcal: measuredNeat === null ? null : Math.round(measuredNeat),
@@ -363,6 +374,7 @@ Deno.serve(async (req) => {
       protein_g_per_kg: Number(prof.data.protein_g_per_kg),
       fat_g_per_kg: Number(prof.data.fat_g_per_kg),
       activity_factor: Number(prof.data.activity_factor),
+      workout_eat_back_pct: prof.data.workout_eat_back_pct == null ? undefined : Number(prof.data.workout_eat_back_pct),
     };
     const plan = makePlan({ profile, history, todayExercise, todayLoad, todaySteps, weighIns, latestWeight, bfPct, today });
 
