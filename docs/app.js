@@ -8,6 +8,7 @@ import { SUPABASE_URL, SUPABASE_KEY, APP_NAME } from "./config.js";
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const MEALS = ["breakfast", "lunch", "dinner", "snack"];
+const WEEK_START = 1; // weeks run Monday to Sunday (0 = Sunday) for the weekly goals on Progress
 const NUTRIENTS = ["kcal", "protein_g", "carbs_g", "fat_g", "fiber_g"];
 
 const state = {
@@ -64,6 +65,12 @@ function s(tag, attrs = {}, ...kids) {
 function today() {
   return new Date().toLocaleDateString("en-CA"); // local YYYY-MM-DD
 }
+/** First day (YYYY-MM-DD) of the week that holds `day`, using WEEK_START. */
+function weekStart(day) {
+  const dow = new Date(day + "T12:00:00").getDay();
+  return addDays(day, -((dow - WEEK_START + 7) % 7));
+}
+
 function addDays(day, n) {
   const d = new Date(day + "T12:00:00");
   d.setDate(d.getDate() + n);
@@ -2030,8 +2037,8 @@ async function renderProgress(view) {
     const [g, metrics, week, weekFood] = await Promise.all([
       goalInfo(true),
       sb.from("body_metrics").select("measured_on, weight_kg").gte("measured_on", addDays(t, -120)).order("measured_on").then(must),
-      sb.from("daily_summary").select("*").gte("day", addDays(t, -6)).lte("day", t).then(must),
-      sb.from("food_logs").select("eaten_on, meal").eq("status", "eaten").gte("eaten_on", addDays(t, -6)).lte("eaten_on", t).then(must),
+      sb.from("daily_summary").select("*").gte("day", weekStart(t)).lte("day", t).then(must),
+      sb.from("food_logs").select("eaten_on, meal").eq("status", "eaten").gte("eaten_on", weekStart(t)).lte("eaten_on", t).then(must),
     ]);
     if (g.bf == null) {
       fill(view, ...head, h("div", { class: "card" }, h("h3", {}, `Goal: ${g.target}% body fat`),
@@ -2048,17 +2055,31 @@ async function renderProgress(view) {
       plan = Array.from({ length: Math.ceil(weeks) + 1 }, (_, i) => ({ day: addDays(d0, Math.min(i, weeks) * 7 | 0), w: Math.max(g.goalWeight, w0 * Math.pow(1 - g.rate / 100, Math.min(i, weeks))) }));
       marks = (g.milestones || []).map((m) => ({ day: m.date, w: m.weight, label: `${m.pct}%` }));
     }
-    const days7 = Array.from({ length: 7 }, (_, i) => addDays(t, i - 6));
+    // This week, Monday to Sunday; days still to come show as empty rings
+    const wk0 = weekStart(t);
+    const days7 = Array.from({ length: 7 }, (_, i) => addDays(wk0, i));
     const byDay = new Map(week.map((r) => [r.day, r]));
-    const habit = (lbl, test, color) => {
-      const hits = days7.map((d) => test(d));
-      const counted = hits.filter((x) => x !== null);
+    const habit = (lbl, test, color, goal = null) => {
+      // later days, and today until it's done, show as still to come
+      const hits = days7.map((d) => { if (d > t) return undefined; const x = test(d); return d === t && !x ? undefined : x; });
+      const counted = hits.filter((x) => x !== null && x !== undefined);
+      const n = hits.filter(Boolean).length;
+      let sub = null;
+      if (goal) {
+        const left = days7.filter((d) => d > t || (d === t && !test(d))).length;
+        sub = n >= goal ? (n > goal ? `goal ${goal} · ${n - goal} extra` : `goal ${goal} · done`)
+          : `goal ${goal} · ${goal - n} to go, ${left} day${left === 1 ? "" : "s"} left`;
+      }
       return h("div", { class: "habit" },
-        h("span", {}, lbl),
-        h("span", { class: "habit-dots", "aria-label": `${hits.filter(Boolean).length} of ${counted.length} days` },
-          ...hits.map((x, i) => h("i", { class: x ? "on" : x === false ? "off" : "none", style: x ? `background:${color}` : null, title: fmtDay(days7[i]) }))),
-        h("span", { class: "muted num" }, `${hits.filter(Boolean).length}/${counted.length}`));
+        h("span", {}, lbl, sub ? h("div", { class: "small muted" }, sub) : null),
+        h("span", { class: "habit-dots", "aria-label": `${n} of ${goal ?? counted.length} days` },
+          ...hits.map((x, i) => h("i", {
+            class: x ? "on" : x === false ? "off" : x === undefined ? "later" : "none",
+            style: x ? `background:${color}` : null, title: fmtDay(days7[i]),
+          }))),
+        h("span", { class: "num " + (goal && n >= goal ? "goal-met" : "muted") }, goal ? `${n}/${goal}` : `${n}/${counted.length}`));
     };
+    const trainGoal = Number(state.profile?.training_days_goal ?? 5);
     const meals = (d) => new Set(weekFood.filter((f) => f.eaten_on === d).map((f) => f.meal));
     const leanDelta = g.startLean ? g.lean - g.startLean : null;
     fill(view, ...head,
@@ -2084,9 +2105,12 @@ async function renderProgress(view) {
         ...g.milestones.map((m) => h("div", { class: "list-row" },
           h("span", {}, h("b", {}, `${m.pct}%`), ` · ${r1(m.weight)} kg`),
           h("span", { class: "muted" }, `around ${fmtDay(m.date, { day: "numeric", month: "short" })}`)))) : null,
-      h("div", { class: "card stack" }, h("h3", {}, "Last 7 days"),
-        habit("Protein target hit", (d) => { const r = byDay.get(d); return r?.target_protein_g && r.food_entries ? Number(r.protein_g) >= 0.95 * r.target_protein_g : null; }, "var(--protein)"),
-        habit("Trained", (d) => !!byDay.get(d)?.workouts, "var(--carbs)"),
+      h("div", { class: "card stack" },
+        h("div", { class: "row" }, h("h3", {}, "This week"),
+          h("span", { class: "small muted" }, `${fmtDay(wk0, { day: "numeric", month: "short" })} – ${fmtDay(addDays(wk0, 6), { day: "numeric", month: "short" })}`)),
+        habit("Trained", (d) => !!byDay.get(d)?.workouts, "var(--carbs)", trainGoal),
+        // within 10% of the day's protein target counts as a hit
+        habit("Protein target hit", (d) => { const r = byDay.get(d); return r?.target_protein_g && r.food_entries ? Number(r.protein_g) >= 0.9 * r.target_protein_g : null; }, "var(--protein)"),
         habit("Slept 7 h or more", (d) => { const r = byDay.get(d); return r?.sleep_min != null ? r.sleep_min >= 420 : null; }, "var(--muted)"),
         habit("Breakfast, lunch and dinner logged", (d) => { const m = meals(d); return m.has("breakfast") && m.has("lunch") && m.has("dinner"); }, "var(--accent)")),
       h("button", { class: "btn secondary", onclick: () => { state.tab = "settings"; render(); } }, "Edit goal and pace"),
@@ -2298,6 +2322,7 @@ async function renderSettings(view) {
     max_hr: p.max_hr ?? "",
     workout_kcal_pct: p.workout_kcal_scale != null ? Math.round(p.workout_kcal_scale * 100) : 65,
     workout_eat_back_pct: p.workout_eat_back_pct ?? 25,
+    training_days_goal: p.training_days_goal ?? 5,
   };
   const field = (key, label, type = "number") =>
     h("div", {}, h("label", {}, label), h("input", {
@@ -2312,12 +2337,14 @@ async function renderSettings(view) {
     const kp = Number(v.workout_kcal_pct), eb = Number(v.workout_eat_back_pct);
     if (!(kp >= 30 && kp <= 150)) throw new Error("Workout calories: use 30 to 150%.");
     if (!(eb >= 0 && eb <= 100)) throw new Error("Workouts eaten back: use 0 to 100%.");
+    const tg = Number(v.training_days_goal);
+    if (!(Number.isInteger(tg) && tg >= 1 && tg <= 7)) throw new Error("Training days a week: use 1 to 7.");
     const row = {
       sex: v.sex, birth_date: v.birth_date, height_cm: Number(v.height_cm),
       target_bf_pct: Number(v.target_bf_pct), loss_rate_pct: Number(v.loss_rate_pct),
       protein_g_per_kg: Number(v.protein_g_per_kg), fat_g_per_kg: Number(v.fat_g_per_kg),
       activity_factor: Number(v.activity_factor), max_hr: numOrNull(v.max_hr),
-      workout_kcal_scale: kp / 100, workout_eat_back_pct: eb,
+      workout_kcal_scale: kp / 100, workout_eat_back_pct: eb, training_days_goal: tg,
       time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     };
     state.profile = must(await sb.from("profile").upsert(row, { onConflict: "user_id" }).select().single());
@@ -2382,8 +2409,8 @@ async function renderSettings(view) {
       h("div", { class: "grid-2" }, field("height_cm", "Height cm"), field("max_hr", "Max heart rate (observed)")),
       h("div", { class: "grid-3" }, field("protein_g_per_kg", "Protein g/kg"), field("fat_g_per_kg", "Fat g/kg"), field("activity_factor", "Daily movement")),
       h("div", { class: "small muted" }, "Daily movement covers life outside logged workouts: 1.2 desk job, 1.35 on your feet some of the day, 1.5 on your feet most of it."),
-      h("div", { class: "grid-2" }, field("workout_kcal_pct", "Workout calories %"), field("workout_eat_back_pct", "Workouts eaten back %")),
-      h("div", { class: "small muted" }, "Workout calories: how much of the heart-rate estimate a band workout counts as; 65% matched Mi Fitness. Changes apply from the next band sync. Eaten back: how much of a day's workouts is added to the next day's target. A burn you type on a workout always wins."),
+      h("div", { class: "grid-3" }, field("workout_kcal_pct", "Workout kcal %"), field("workout_eat_back_pct", "Eaten back %"), field("training_days_goal", "Train days/wk")),
+      h("div", { class: "small muted" }, "Workout kcal: how much of the heart-rate estimate a band workout counts as; 65% matched Mi Fitness. Changes apply from the next band sync. Eaten back: how much of a day's workouts is added to the next day's target. A burn you type on a workout always wins. Training days: your weekly goal on Progress (weeks run Monday to Sunday)."),
       h("div", { style: "height:10px" }), save),
     h("div", { class: "card stack" }, h("h3", {}, "Band data (Health Connect)"), hcBox, newToken),
     h("div", { class: "card stack" }, h("h3", {}, "What the coach remembers"),
