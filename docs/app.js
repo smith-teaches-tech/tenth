@@ -538,7 +538,7 @@ function savedMealRow(m, ctx = {}) {
   const t = sumItems(m.items);
   return h("button", { class: "entry", style: "padding:12px 14px;justify-content:space-between", onclick: () => logSavedMeal(m, ctx) },
     h("span", { class: "desc" }, m.name, h("div", { class: "small muted" }, m.items.length > 1 ? `${m.items.length} items · P ${r0(t.protein_g)}` : `P ${r0(t.protein_g)}`)),
-    h("span", { class: "num" }, `${r0(t.kcal)} kcal`));
+    h("span", { class: "num", style: "white-space:nowrap;flex:none" }, `${r0(t.kcal)} kcal`));
 }
 
 function logSavedMeal(m, ctx = {}) {
@@ -1057,6 +1057,7 @@ async function quickSaveMeal(e) {
 }
 
 async function markEaten(e) {
+  if (e.eaten_on > today()) throw new Error("That's a planned meal for a later day; tick it on the day you eat it.");
   must(await sb.from("food_logs").update({ status: "eaten", eaten_at: new Date().toISOString() }).eq("id", e.id));
   toast(`Ate it: ${r0(e.kcal)} kcal`);
 }
@@ -1098,11 +1099,12 @@ async function copyDay(fromDay, toDay) {
 /** A food entry row: tap to open actions; ✓ marks a planned meal eaten; ★ saves it as a meal. */
 function entryRow(e, after = render) {
   const planned = isPlanned(e);
+  const canEat = planned && e.eaten_on <= today();
   return h("div", { class: "entry" + (planned ? " planned" : "") },
     h("button", { class: "entry-main", onclick: () => openEntryActions(e, after) },
       h("span", { class: "desc" }, e.description),
       h("span", { class: "num muted" }, `${r0(e.kcal)} · P${r0(e.protein_g)}`)),
-    planned
+    canEat
       ? h("button", {
           class: "entry-btn ate", title: "Ate it",
           onclick: (ev) => busy(ev.currentTarget, async () => { await markEaten(e); after(); }),
@@ -1122,7 +1124,7 @@ function openEntryActions(e, after = render) {
     h("div", { class: "note num" },
       planned ? "Planned · " : "",
       `${r0(e.kcal)} kcal · P ${r0(e.protein_g)} · C ${r0(e.carbs_g)} · F ${r0(e.fat_g)}`),
-    planned
+    planned && e.eaten_on <= t
       ? h("button", {
           class: "btn",
           onclick: (ev) => busy(ev.currentTarget, async () => { await markEaten(e); closeSheet(); after(); }),
@@ -1233,7 +1235,7 @@ async function openMealPlanner(day = state.day) {
     return h("div", {},
       h("div", { class: "meal-head" }, h("span", {}, slot), h("span", { class: "num" }, es.length ? `${r0(kcal)} kcal` : "")),
       ...es.map((e) => entryRow(e, reopen)),
-      lastTimeBlock(recent, slot, day, es, reopen),
+      day > today() ? lastTimeBlock(recent, slot, day, es, reopen) : null,
       h("button", { class: "add-slot", onclick: () => openAddToSlot(day, slot, saved, reopen) }, `+ Add ${slot}`));
   });
 
@@ -1529,8 +1531,9 @@ async function refreshTomorrow(d) {
 }
 
 /**
- * Dishes from the last time you had this meal, each one on its own line: + adds it as is, tapping the name lets you
- * change the portion first. Dishes already in the meal are left out, so you can add one at a time.
+ * Foods from the last time you had this meal, each one on its own line: + adds it as is, tapping the name lets you
+ * change the portion first. A saved meal logged as one entry (e.g. "Usual breakfast" = eggs, whites, yoghurt, muesli)
+ * is split into its foods. Foods already in the meal are left out, so you can add one at a time.
  * `recent` = eaten logs from the week before `day`, newest first. `have` = what's already in this meal on `day`.
  * With `collapsed`, shows a one-line "More from yesterday" that opens the list.
  */
@@ -1538,8 +1541,17 @@ function lastTimeBlock(recent, slot, day, have, after, collapsed = false) {
   const prevDay = recent.find((e) => e.meal === slot)?.eaten_on;
   if (!prevDay) return null;
   const norm = (x) => (x || "").trim().toLowerCase();
-  const already = new Set(have.map((e) => norm(e.description)));
-  const dishes = recent.filter((e) => e.meal === slot && e.eaten_on === prevDay && !already.has(norm(e.description)));
+  const already = new Set(have.flatMap((e) => [norm(e.description), ...entryItems(e).map((x) => norm(x.name))]));
+  const seen = new Set();
+  const dishes = recent.filter((e) => e.meal === slot && e.eaten_on === prevDay)
+    .flatMap((e) => {
+      const items = entryItems(e);
+      return items.map((x) => ({
+        description: x.name, grams: x.grams, kcal: x.kcal, protein_g: x.protein_g, carbs_g: x.carbs_g, fat_g: x.fat_g,
+        fiber_g: x.fiber_g || 0, items: [x], food_id: items.length === 1 ? e.food_id : null,
+      }));
+    })
+    .filter((x) => { const k = norm(x.description); if (already.has(k) || seen.has(k)) return false; seen.add(k); return true; });
   if (!dishes.length) return null;
   const status = day > today() ? "planned" : "eaten";
   const when = prevDay === addDays(day, -1) ? "yesterday" : fmtDay(prevDay, { weekday: "long" });
@@ -1690,7 +1702,7 @@ async function renderToday(view) {
           h("div", { class: "meal-card-head" },
             h("span", {}, h("b", {}, cap(slot)), h("span", { class: "muted num" }, ` · ${allPlanned ? "planned " : ""}${r0(kc.kcal)} · P${r0(kc.protein_g)}`)),
             h("span", { class: "meal-card-actions" },
-              allPlanned ? h("button", {
+              allPlanned && d <= t ? h("button", {
                 class: "chip-btn",
                 onclick: (ev) => busy(ev.currentTarget, async () => {
                   for (const e of es) await markEaten(e);
@@ -1701,8 +1713,8 @@ async function renderToday(view) {
               h("button", { class: "icon-btn ghost accent", "aria-label": `Add to ${slot}`, onclick: () => openAddFood(slot, d) }, icon("plus", 20)))),
           ...es.map((e) => h("button", { class: "meal-line" + (isPlannedE(e) ? " planned" : ""), onclick: () => openEntryActions(e) },
             h("span", { class: "desc" }, e.description), h("span", { class: "muted num" }, r0(e.kcal)))),
-          // planning ahead: keep last time's dishes open; today: fold them once the meal is eaten
-          d >= t ? lastTimeBlock(recent, slot, d, es, render, d === t && eatenEs.length > 0) : null),
+          // planning ahead only: on today they'd hang around after you ate something else
+          d > t ? lastTimeBlock(recent, slot, d, es, render) : null),
       });
     } else if (d >= t) {
       // Empty slot: offer the dishes from the last time you had this meal, one by one
@@ -1712,7 +1724,7 @@ async function renderToday(view) {
           h("div", { class: "meal-card-head" },
             h("b", {}, cap(slot)),
             h("button", { class: "icon-btn ghost accent", "aria-label": `Add to ${slot}`, onclick: () => openAddFood(slot, d) }, icon("plus", 20))),
-          lastTimeBlock(recent, slot, d, [], render)),
+          d > t ? lastTimeBlock(recent, slot, d, [], render) : null),
       });
     }
   }
