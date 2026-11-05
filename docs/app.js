@@ -813,6 +813,9 @@ function openWorkoutUpload(initialFile) {
 }
 
 function openWorkoutForm(w) {
+  // Read from a Mi Fitness image: Mi Fitness's calories are stored but don't set the burn (close to a fixed 5 kcal a
+  // minute in most modes). Heart rate sets it instead, unless a number is typed. Entered by hand: the number is the burn.
+  const fromImage = !!w.type;
   const startDefault = w.started_at_local || `${state.day}T${new Date().toTimeString().slice(0, 5)}`;
   const v = {
     type: w.type || "",
@@ -824,7 +827,7 @@ function openWorkoutForm(w) {
     max_hr: w.max_hr ?? "",
     training_load: w.training_load ?? "",
     recovery_h: w.recovery_h ?? "",
-    kcal_used: w.kcal_used ?? w.active_kcal ?? "",
+    kcal_used: fromImage ? "" : (w.kcal_used ?? w.active_kcal ?? ""),
     description: w.description || "",
   };
   const field = (key, label, type = "number") =>
@@ -837,8 +840,11 @@ function openWorkoutForm(w) {
 
   save.addEventListener("click", () => busy(save, async () => {
     if (!v.type.trim()) throw new Error("Give the workout a type.");
-    const used = numOrNull(v.kcal_used) ?? numOrNull(v.active_kcal);
+    const typedBurn = numOrNull(v.kcal_used);
+    const used = typedBurn ?? numOrNull(v.active_kcal);
     if (used == null) throw new Error("Enter the calories burned (active kcal).");
+    // A locked burn never changes. An image's burn stays unlocked unless typed, so heart rate can replace it.
+    const lockBurn = !fromImage || typedBurn != null;
     const z = w.zones_s || {};
     const row = {
       done_on: v.start ? v.start.slice(0, 10) : state.day,
@@ -860,30 +866,36 @@ function openWorkoutForm(w) {
       training_load: numOrNull(v.training_load),
       recovery_h: numOrNull(v.recovery_h),
       kcal_used: Math.round(used),
-      source: w.type && w.zones_s ? "mi_fitness_image" : "manual",
+      source: fromImage ? "mi_fitness_image" : "manual",
       ai_raw: w.zones_s ? w : null,
     };
     // The band may already have recorded this session: merge into it rather than double-count
     let merged = false;
     if (row.started_at) {
       const t0 = new Date(row.started_at).getTime();
-      const near = must(await sb.from("workouts").select("id, source")
+      const near = must(await sb.from("workouts").select("id, started_at")
         .gte("started_at", new Date(t0 - 20 * 60000).toISOString())
         .lte("started_at", new Date(t0 + 20 * 60000).toISOString())
-        .neq("status", "dismissed").limit(1));
+        .neq("status", "dismissed"));
       if (near.length) {
-        const { started_at, ...rest } = row;
-        must(await sb.from("workouts").update({ ...rest, status: "confirmed", kcal_locked: true }).eq("id", near[0].id));
+        // Sessions can start minutes apart (rowing, then weights), so take the one that starts closest
+        const gap = (x) => Math.abs(new Date(x.started_at).getTime() - t0);
+        const closest = near.reduce((a, b) => (gap(b) < gap(a) ? b : a));
+        const { started_at, kcal_used, ...rest } = row;
+        const burn = lockBurn ? { kcal_used, kcal_locked: true } : {}; // otherwise the session keeps the burn it has
+        must(await sb.from("workouts").update({ ...rest, ...burn, status: "confirmed" }).eq("id", closest.id));
         merged = true;
       }
     }
     if (!merged) {
-      const { error } = await sb.from("workouts").insert({ ...row, kcal_locked: true });
+      const { error } = await sb.from("workouts").insert({ ...row, kcal_locked: lockBurn });
       if (error?.code === "23505") throw new Error("That workout is already saved.");
       if (error) throw new Error(error.message);
     }
     closeSheet();
-    toast(merged ? `Merged with the band's session: ${row.kcal_used} kcal` : `Workout saved: ${row.kcal_used} kcal`);
+    toast(merged
+      ? (lockBurn ? `Merged with the band's session: ${row.kcal_used} kcal` : "Merged with the band's session")
+      : (lockBurn ? `Workout saved: ${row.kcal_used} kcal` : `Workout saved: ${row.kcal_used} kcal for now. Your heart rate replaces that after the band syncs.`));
     state.day = row.done_on;
     render();
   }));
@@ -895,7 +907,9 @@ function openWorkoutForm(w) {
     h("div", { class: "grid-3" }, field("minutes", "Minutes"), field("active_kcal", "Active kcal"), field("total_kcal", "Total kcal")),
     h("div", { class: "grid-3" }, field("avg_hr", "Avg HR"), field("max_hr", "Max HR"), field("training_load", "Load")),
     h("div", { class: "grid-2" }, field("recovery_h", "Recovery h"), field("kcal_used", "Burn the plan uses")),
-    h("div", { class: "small muted" }, "The plan eats this burn back the next day. Lower it if you think the watch overestimates."),
+    h("div", { class: "small muted" }, fromImage
+      ? "Leave this blank and Tenth works out the burn from your heart rate. A number you type here always wins."
+      : "The plan eats this burn back the next day. Lower it if you think the watch overestimates."),
     h("label", {}, "What you did"), desc,
     h("div", { style: "height:10px" }), save);
 }
@@ -2320,7 +2334,7 @@ async function renderSettings(view) {
     fat_g_per_kg: p.fat_g_per_kg ?? 0.8,
     activity_factor: p.activity_factor ?? 1.35,
     max_hr: p.max_hr ?? "",
-    workout_kcal_pct: p.workout_kcal_scale != null ? Math.round(p.workout_kcal_scale * 100) : 65,
+    workout_kcal_pct: p.workout_kcal_scale != null ? Math.round(p.workout_kcal_scale * 100) : 100,
     workout_eat_back_pct: p.workout_eat_back_pct ?? 25,
     training_days_goal: p.training_days_goal ?? 5,
   };
@@ -2410,7 +2424,7 @@ async function renderSettings(view) {
       h("div", { class: "grid-3" }, field("protein_g_per_kg", "Protein g/kg"), field("fat_g_per_kg", "Fat g/kg"), field("activity_factor", "Daily movement")),
       h("div", { class: "small muted" }, "Daily movement covers life outside logged workouts: 1.2 desk job, 1.35 on your feet some of the day, 1.5 on your feet most of it."),
       h("div", { class: "grid-3" }, field("workout_kcal_pct", "Workout kcal %"), field("workout_eat_back_pct", "Eaten back %"), field("training_days_goal", "Train days/wk")),
-      h("div", { class: "small muted" }, "Workout kcal: how much of the heart-rate estimate a band workout counts as; 65% matched Mi Fitness. Changes apply from the next band sync. Eaten back: how much of a day's workouts is added to the next day's target. A burn you type on a workout always wins. Training days: your weekly goal on Progress (weeks run Monday to Sunday)."),
+      h("div", { class: "small muted" }, "Workout kcal: scales the burn Tenth works out from your heart rate; 100% leaves it as is. Changes apply from the next band sync. Eaten back: how much of a day's workouts is added to the next day's target. A burn you type on a workout always wins. Training days: your weekly goal on Progress (weeks run Monday to Sunday)."),
       h("div", { style: "height:10px" }), save),
     h("div", { class: "card stack" }, h("h3", {}, "Band data (Health Connect)"), hcBox, newToken),
     h("div", { class: "card stack" }, h("h3", {}, "What the coach remembers"),
