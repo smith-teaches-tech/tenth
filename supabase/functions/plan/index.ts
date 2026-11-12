@@ -18,7 +18,9 @@
 //    percentage only decides how much training days get over rest days.
 //    Deficit comes from the loss rate in your profile (default 0.5% of bodyweight a week; 0.25 to 1.0 allowed).
 // 5. Protein and fat are set per kg of bodyweight; carbs fill the rest.
-// 6. Body fat for the timeline is the average of your last 3 readings, to smooth tape-measure noise.
+// 6. Lean mass is fixed by your last 3 body fat readings: each reading's weight that day x (1 - body fat), averaged to
+//    smooth tape-measure noise. Between readings, current body fat = (weight - lean mass) / weight, so weight you lose
+//    lowers body fat and brings the date closer, and goal weight only changes when you take a new reading.
 //
 // Request (POST, JSON, with your signed-in session token):
 //   { "today": "YYYY-MM-DD", "for_date": "YYYY-MM-DD", "save": true }
@@ -127,11 +129,12 @@ export function estimateIntake(history: Day[]) {
   }
 
   let filled = 0;
+  const filledMeals: { day: string; meal: Meal }[] = [];
   const estimated = logged.map((d) => {
     let kcal = 0;
     for (const m of MEALS) {
       if (d.meals[m] > 0) kcal += d.meals[m];
-      else if (usual.has(m)) { kcal += usual.get(m)!; filled++; }
+      else if (usual.has(m)) { kcal += usual.get(m)!; filled++; filledMeals.push({ day: d.day, meal: m }); }
     }
     return { day: d.day, kcal };
   });
@@ -139,12 +142,28 @@ export function estimateIntake(history: Day[]) {
   // Anything still under half your typical day is treated as not properly logged
   const typical = estimated.length ? median(estimated.map((d) => d.kcal)) : 0;
   const counted = estimated.filter((d) => d.kcal >= typical * 0.5);
-  return { counted, filled, dropped: estimated.length - counted.length, usualMeals: Object.fromEntries(usual) };
+  const countedDays = new Set(counted.map((d) => d.day));
+  return {
+    counted, filled, dropped: estimated.length - counted.length, usualMeals: Object.fromEntries(usual),
+    filledMeals: filledMeals.filter((f) => countedDays.has(f.day)),
+  };
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const shortDay = (day: string) => `${Number(day.slice(8, 10))} ${MONTHS[Number(day.slice(5, 7)) - 1]}`;
+
+/** "lunch and snack on 1 Nov, snack on 7 Nov" (the 3 latest days, then a count of earlier ones) */
+export function describeFilled(filled: { day: string; meal: Meal }[]): string {
+  const byDay = new Map<string, string[]>();
+  for (const f of filled) byDay.set(f.day, [...(byDay.get(f.day) ?? []), f.meal]);
+  const list = (xs: string[]) => xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
+  const days = [...byDay.keys()].sort();
+  const shown = days.slice(-3).map((d) => `${list(byDay.get(d)!)} on ${shortDay(d)}`).join(", ");
+  return days.length > 3 ? `${shown}, and ${days.length - 3} earlier day${days.length - 3 === 1 ? "" : "s"}` : shown;
 }
 
 /** Weeks to go from current weight to goal weight, losing loss_rate_pct of CURRENT weight each week. */
-export function timeline(weight: number, bfPct: number, targetPct: number, ratePct: number, from: string) {
-  const leanKg = weight * (1 - bfPct / 100);
+export function timeline(weight: number, leanKg: number, targetPct: number, ratePct: number, from: string) {
   const goalWeight = leanKg / (1 - targetPct / 100);
   const toLose = weight - goalWeight;
   if (toLose <= 0) return { lean_kg: leanKg, goal_weight_kg: goalWeight, kg_to_lose: 0, weeks: 0, eta: from };
@@ -158,6 +177,14 @@ export function timeline(weight: number, bfPct: number, targetPct: number, rateP
   };
 }
 
+export type BfReading = { day: string; w: number; bf: number }; // one body fat reading and that day's weight
+
+/** Average lean mass across body fat readings, each worked out at the weight on the day it was taken. */
+export function leanFromReadings(readings: BfReading[]): number | null {
+  if (!readings.length) return null;
+  return readings.reduce((sum, r) => sum + r.w * (1 - r.bf / 100), 0) / readings.length;
+}
+
 export type PlanInput = {
   profile: Profile;
   history: Day[];          // the 28 days BEFORE today (today's food log is usually incomplete, so it is left out)
@@ -166,7 +193,7 @@ export type PlanInput = {
   todaySteps: number | null;
   weighIns: { day: string; w: number }[]; // weigh-ins from 28 days ago up to and including today
   latestWeight: number;    // most recent weigh-in
-  bfPct: number | null;    // average of recent body fat readings
+  bfReadings: BfReading[]; // recent body fat readings, newest first
   today: string;
 };
 
@@ -187,7 +214,6 @@ export function makePlan(inp: PlanInput) {
 
   // Measured everyday burn, once there is enough data
   const intake = estimateIntake(inp.history);
-  if (intake.filled > 0) notes.push(`Filled ${intake.filled} missed meal${intake.filled === 1 ? "" : "s"} with your usual amounts.`);
   if (intake.dropped > 0) notes.push(`Left out ${intake.dropped} day${intake.dropped === 1 ? "" : "s"} that looked only partly logged.`);
 
   let neat = formulaNeat;
@@ -201,6 +227,11 @@ export function makePlan(inp: PlanInput) {
     // Backstop against bad logging: keep the measurement within 35% of the formula
     measuredNeat = Math.min(Math.max(raw, formulaNeat * 0.65), formulaNeat * 1.35);
     if (measuredNeat !== raw) notes.push("Measured burn looked off, so it was capped near the formula.");
+    // Filled meals only matter here, where logged intake measures your burn. Name them, since they come from
+    // the last 4 weeks and could otherwise be mistaken for today's meals.
+    if (intake.filledMeals.length > 0) {
+      notes.push(`Measured burn counts your usual amounts for meals you didn't log: ${describeFilled(intake.filledMeals)}.`);
+    }
     const trust = Math.min(1, intake.counted.length / FULL_TRUST_DAYS);
     neat = trust * measuredNeat + (1 - trust) * formulaNeat;
     method = trust >= 1 ? "adaptive" : "blended";
@@ -225,8 +256,10 @@ export function makePlan(inp: PlanInput) {
   // Deficit from the chosen loss rate, unless the target is already reached
   let tl = null as ReturnType<typeof timeline> | null;
   let deficit = (weight * p.loss_rate_pct) / 100 * KCAL_PER_KG / 7;
-  if (inp.bfPct !== null) {
-    tl = timeline(weight, inp.bfPct, p.target_bf_pct, p.loss_rate_pct, inp.today);
+  const leanKg = leanFromReadings(inp.bfReadings);
+  const bfPct = leanKg === null ? null : Math.max(0, Math.round((1 - leanKg / weight) * 1000) / 10);
+  if (leanKg !== null) {
+    tl = timeline(weight, leanKg, p.target_bf_pct, p.loss_rate_pct, inp.today);
     if (tl.kg_to_lose <= 0) {
       deficit = 0;
       notes.push("At or below target body fat: eating at maintenance.");
@@ -287,7 +320,9 @@ export function makePlan(inp: PlanInput) {
       meals_filled: intake.filled,
       usual_meals_kcal: Object.fromEntries(Object.entries(intake.usualMeals).map(([k, v]) => [k, Math.round(v as number)])),
       weigh_ins: weighIns.length,
-      body_fat_pct_used: inp.bfPct,
+      body_fat_pct_used: bfPct, // today's estimate: last readings' lean mass at the current weight
+      lean_kg_used: leanKg === null ? null : Math.round(leanKg * 100) / 100,
+      body_fat_tape_on: inp.bfReadings[0]?.day ?? null,
     },
     timeline: tl && {
       lean_kg: Math.round(tl.lean_kg * 10) / 10,
@@ -331,7 +366,7 @@ Deno.serve(async (req) => {
     const [prof, metrics, bfRows, foods, works, steps] = await Promise.all([
       supabase.from("profile").select("*").maybeSingle(),
       supabase.from("body_metrics").select("measured_on, weight_kg").gte("measured_on", start).lte("measured_on", today).order("measured_on"),
-      supabase.from("body_metrics").select("body_fat_pct").not("body_fat_pct", "is", null)
+      supabase.from("body_metrics").select("measured_on, weight_kg, body_fat_pct").not("body_fat_pct", "is", null)
         .gte("measured_on", addDays(today, -42)).lte("measured_on", today).order("measured_on", { ascending: false }).limit(3),
       supabase.from("food_logs").select("eaten_on, meal, kcal").eq("status", "eaten").gte("eaten_on", start).lte("eaten_on", yesterday),
       supabase.from("workouts").select("done_on, kcal_used, training_load").eq("status", "confirmed").gte("done_on", start).lte("done_on", today),
@@ -363,8 +398,7 @@ Deno.serve(async (req) => {
     }
     const weighIns = metrics.data.map((m) => ({ day: m.measured_on as string, w: Number(m.weight_kg) }));
     const latestWeight = weighIns[weighIns.length - 1].w;
-    const bfVals = bfRows.data!.map((r) => Number(r.body_fat_pct));
-    const bfPct = bfVals.length ? Math.round((bfVals.reduce((a, b) => a + b, 0) / bfVals.length) * 10) / 10 : null;
+    const bfReadings = bfRows.data!.map((r) => ({ day: r.measured_on as string, w: Number(r.weight_kg), bf: Number(r.body_fat_pct) }));
 
     const profile: Profile = {
       ...prof.data,
@@ -376,7 +410,7 @@ Deno.serve(async (req) => {
       activity_factor: Number(prof.data.activity_factor),
       workout_eat_back_pct: prof.data.workout_eat_back_pct == null ? undefined : Number(prof.data.workout_eat_back_pct),
     };
-    const plan = makePlan({ profile, history, todayExercise, todayLoad, todaySteps, weighIns, latestWeight, bfPct, today });
+    const plan = makePlan({ profile, history, todayExercise, todayLoad, todaySteps, weighIns, latestWeight, bfReadings, today });
 
     if (save) {
       const { error: upErr } = await supabase.from("daily_targets").upsert({

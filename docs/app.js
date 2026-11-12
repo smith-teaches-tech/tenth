@@ -45,6 +45,8 @@ function h(tag, attrs = {}, ...kids) {
     el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
   }
   if (value !== undefined) el.value = value; // after options exist, so selects pick it up
+  // Chrome on Android opens a spelling popup on a misspelt word that can trap the field. Food names don't need it.
+  if ((tag === "input" || tag === "textarea") && !el.hasAttribute("spellcheck")) el.spellcheck = false;
   return el;
 }
 
@@ -997,6 +999,34 @@ async function openSteps() {
     h("div", { style: "height:10px" }), save);
 }
 
+/** Sleeping heart rate typed from Mi Fitness (the band doesn't share overnight heart rate with Health Connect). */
+async function openSleepHr(day = state.day) {
+  const existing = must(await sb.from("daily_activity").select("sleep_hr, sleep_hr_source").eq("day", day).maybeSingle());
+  const date = h("input", { type: "date", value: day });
+  const bpm = h("input", { type: "number", inputmode: "numeric", min: 30, max: 120, placeholder: "e.g. 53", value: existing?.sleep_hr ?? "" });
+  const load = async () => {
+    const r = must(await sb.from("daily_activity").select("sleep_hr").eq("day", date.value).maybeSingle());
+    bpm.value = r?.sleep_hr ?? "";
+  };
+  date.addEventListener("change", () => load().catch((e) => toast(e.message)));
+  const save = h("button", { class: "btn" }, "Save");
+  save.addEventListener("click", () => busy(save, async () => {
+    const n = numOrNull(bpm.value);
+    if (n != null && (n < 30 || n > 120)) throw new Error("Sleeping heart rate should be between 30 and 120.");
+    must(await sb.from("daily_activity").upsert(
+      { day: date.value, sleep_hr: n == null ? null : Math.round(n), sleep_hr_source: n == null ? null : "manual" },
+      { onConflict: "user_id,day" }));
+    closeSheet();
+    toast(n == null ? "Sleep HR cleared" : "Sleep HR saved");
+    render();
+  }));
+  openSheet("Sleeping heart rate",
+    h("p", { class: "small muted" }, "Type the average heart rate from Mi Fitness's sleep screen, for the night that ended this morning. Mi Fitness doesn't share overnight heart rate with Health Connect, so Tenth can't read it. Your number stays when the band syncs. Leave it empty and save to clear it."),
+    h("div", { class: "grid-2" }, h("div", {}, h("label", {}, "Morning of"), date), h("div", {}, h("label", {}, "Sleep HR (bpm)"), bpm)),
+    h("div", { style: "height:10px" }), save);
+  bpm.focus();
+}
+
 // ---------------------------------------------------------------------------
 // Plan
 // ---------------------------------------------------------------------------
@@ -1444,9 +1474,10 @@ async function goalInfo(force = false) {
   const bf = p.detail.body_fat_pct_used;
   const info = { day: t, plan: p, target, rate, weight, bf, start: firstBf };
   if (bf != null) {
-    const lean = weight * (1 - bf / 100);
+    // Lean mass comes from the last body fat readings and holds until the next one, so goal weight stays put as weight falls
+    const lean = p.detail.lean_kg_used ?? weight * (1 - bf / 100);
     info.lean = lean;
-    info.goalWeight = lean / (1 - target / 100);
+    info.goalWeight = p.timeline?.goal_weight_kg ?? lean / (1 - target / 100);
     const weeksTo = (w) => Math.log(weight / w) / -Math.log(1 - rate / 100);
     const eta = p.timeline?.eta;
     info.milestones = [15, 12, target]
@@ -1680,9 +1711,7 @@ async function renderToday(view) {
   const strip = h("div", { class: "tiles" },
     tile("moon", act?.sleep_min != null ? minsToHM(act.sleep_min) : "–", "sleep", () => act?.sleep_min != null && toast(
       `Sleep ${minsToHM(act.sleep_min)}${act.deep_min != null ? ` · deep ${minsToHM(act.deep_min)}` : ""}${act.rem_min != null ? ` · REM ${minsToHM(act.rem_min)}` : ""}${act.awake_min ? ` · awake ${act.awake_min} min` : ""}`)),
-    act?.sleep_hr != null
-      ? tile("heart", act.sleep_hr, "sleep HR", () => toast(`Average heart rate while asleep: ${act.sleep_hr} bpm${act.low_hr != null ? ` · day's low ${act.low_hr}` : ""}`))
-      : tile("heart", act?.low_hr ?? "–", "resting HR"),
+    tile("heart", act?.sleep_hr ?? "–", "sleep HR", () => openSleepHr(d)),
     tile("steps", act?.steps != null ? Number(act.steps).toLocaleString() : "–", "steps", () => openSteps()),
     tile("dumbbell", trained ? r0(trained) : "–", "trained kcal", () => openWorkoutUpload()));
 
@@ -1906,7 +1935,8 @@ function openAddSheet() {
     h("div", { class: "add-group" }, "Activity"),
     h("div", { class: "add-grid" },
       opt("dumbbell", "Workout", () => openWorkoutUpload()),
-      opt("steps", "Steps", () => openSteps())),
+      opt("steps", "Steps", () => openSteps()),
+      opt("heart", "Sleep HR", () => openSleepHr(day))),
     h("div", { class: "add-group" }, "Body and targets"),
     h("div", { class: "add-grid" },
       opt("scale", "Weigh-in", () => openWeighIn()),
@@ -2096,6 +2126,9 @@ async function renderProgress(view) {
     const trainGoal = Number(state.profile?.training_days_goal ?? 5);
     const meals = (d) => new Set(weekFood.filter((f) => f.eaten_on === d).map((f) => f.meal));
     const leanDelta = g.startLean ? g.lean - g.startLean : null;
+    const tapeOn = g.plan.detail.body_fat_tape_on;
+    const tapeDay = tapeOn ? fmtDay(tapeOn, { day: "numeric", month: "short" }) : null;
+    const oneReading = tapeOn && tapeOn === g.start?.measured_on; // nothing to compare lean mass with yet
     fill(view, ...head,
       h("div", { class: "card stack" },
         h("div", { class: "row" },
@@ -2111,7 +2144,7 @@ async function renderProgress(view) {
         h("div", { class: "stat num" }, h("span", {}, "Goal weight"), h("b", {}, `${r1(g.goalWeight)} kg`)),
         h("div", { class: "stat num" }, h("span", {}, "Pace"), h("b", {}, g.pace != null ? `${g.pace} kg/wk` : "–"), h("span", {}, `plan ${g.plannedPace.toFixed(2)}`)),
         h("div", { class: "stat num" }, h("span", {}, "Lean mass"), h("b", {}, `${r1(g.lean)} kg`),
-          h("span", {}, leanDelta == null ? "" : Math.abs(leanDelta) < 0.5 ? "holding" : leanDelta > 0 ? `+${r1(leanDelta)} kg` : `${r1(leanDelta)} kg`))),
+          h("span", {}, oneReading ? `from ${tapeDay} tape` : leanDelta == null ? "" : Math.abs(leanDelta) < 0.5 ? "holding" : leanDelta > 0 ? `+${r1(leanDelta)} kg` : `${r1(leanDelta)} kg`))),
       weights.length >= 2 ? h("div", { class: "card" },
         h("div", { class: "row small" }, h("b", {}, "Weight vs plan"), h("span", { class: "muted" }, "line you · dashed plan")),
         weightChart(weights, { plan, marks })) : null,
@@ -2128,7 +2161,7 @@ async function renderProgress(view) {
         habit("Slept 7 h or more", (d) => { const r = byDay.get(d); return r?.sleep_min != null ? r.sleep_min >= 420 : null; }, "var(--muted)"),
         habit("Breakfast, lunch and dinner logged", (d) => { const m = meals(d); return m.has("breakfast") && m.has("lunch") && m.has("dinner"); }, "var(--accent)")),
       h("button", { class: "btn secondary", onclick: () => { state.tab = "settings"; render(); } }, "Edit goal and pace"),
-      h("div", { class: "small muted" }, "Dates assume the weight you lose is fat and lean mass holds; real progress usually runs a little slower."));
+      h("div", { class: "small muted" }, `${tapeDay ? `Body fat since your last tape (${tapeDay}) is estimated from your weight. A new tape corrects it. ` : ""}Dates assume the weight you lose is fat and lean mass holds; real progress usually runs a little slower.`));
     return;
   }
 
@@ -2159,7 +2192,7 @@ async function renderProgress(view) {
               `${m.last - m.first > 0 ? "+" : ""}${r1(m.last - m.first)}`))))) : null,
       h("div", { class: "card" }, h("h3", {}, "Recovery, last 14 days"),
         dayBars(days14, (d) => aByDay.get(d)?.sleep_min != null ? aByDay.get(d).sleep_min / 60 : null, { color: "var(--muted)", label: "Sleep", unit: "h", fmt: (v) => r1(v), targetOf: () => 7 }),
-        dayBars(days14, (d) => aByDay.get(d)?.sleep_hr ?? aByDay.get(d)?.low_hr ?? null, { color: "var(--fat)", label: "Sleep heart rate", unit: "bpm" })),
+        dayBars(days14, (d) => aByDay.get(d)?.sleep_hr ?? null, { color: "var(--fat)", label: "Sleep heart rate", unit: "bpm" })),
       h("button", { class: "btn secondary", onclick: openWeighIn }, "Add a weigh-in"));
     return;
   }
