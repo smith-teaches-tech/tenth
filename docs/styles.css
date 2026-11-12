@@ -111,9 +111,15 @@ h1, h2, h3 { margin: 0; font-weight: 700; }
 .ring-centre { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .ring-label { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
 .bars { display: grid; gap: 9px; }
-.bar-row { display: grid; grid-template-columns: 56px 1fr auto; gap: 8px; align-items: center; font-size: 13px; }
+.bar-row { display: grid; grid-template-columns: 50px 1fr auto; gap: 6px; align-items: center; font-size: 13px; }
 .bar { height: 8px; background: var(--track); border-radius: 99px; overflow: hidden; }
-.bar > span { display: block; height: 100%; border-radius: 99px; }
+.bar { display: flex; }
+.bar > span { display: block; height: 100%; border-radius: 99px; flex: none; }
+/* Planned food (not eaten yet): shaded segment straight after what's eaten */
+.bar > span:has(+ .plan) { border-radius: 99px 0 0 99px; }
+.bar > span.plan { opacity: 0.5; border-radius: 0 99px 99px 0; background-image: repeating-linear-gradient(-45deg, rgba(0,0,0,.35) 0 2px, transparent 2px 4px) !important; }
+.bar > span[style*="width:0%"] + .plan { border-radius: 99px; }
+.plan-num { color: var(--muted); font-size: 11px; }
 
 /* Recovery tiles */
 .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }

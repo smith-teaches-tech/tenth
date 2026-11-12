@@ -1394,12 +1394,19 @@ function macroLegend(parts) {
       p.targetPct != null ? h("span", { class: "muted small" }, `goal ${p.targetPct}%`) : null)));
 }
 
-function ring(eaten, target) {
+/** Calorie ring: eaten in solid, planned (not eaten yet) as a faint arc after it. */
+function ring(eaten, target, planned = 0) {
   const R = 50, C = 2 * Math.PI * R;
   const frac = target ? Math.min(1, eaten / target) : 0;
+  const withPlan = target ? Math.min(1, (eaten + planned) / target) : 0;
   const over = target && eaten > target;
+  const overWithPlan = target && eaten + planned > target;
   return s("svg", { viewBox: "0 0 120 120", width: 120, height: 120 },
     s("circle", { cx: 60, cy: 60, r: R, fill: "none", stroke: "var(--card-2)", "stroke-width": 12 }),
+    planned > 0 && target ? s("circle", {
+      cx: 60, cy: 60, r: R, fill: "none", stroke: overWithPlan ? "var(--danger)" : "var(--accent)", "stroke-width": 12,
+      opacity: 0.35, "stroke-dasharray": `${C * withPlan} ${C}`, transform: "rotate(-90 60 60)",
+    }) : null,
     s("circle", {
       cx: 60, cy: 60, r: R, fill: "none", stroke: over ? "var(--danger)" : "var(--accent)", "stroke-width": 12,
       "stroke-linecap": "round", "stroke-dasharray": `${C * frac} ${C}`, transform: "rotate(-90 60 60)",
@@ -1407,12 +1414,20 @@ function ring(eaten, target) {
   );
 }
 
-function bar(label, value, target, color) {
+/** Macro bar: eaten in solid, planned (not eaten yet) shaded after it. Numbers read "eaten +planned/target". */
+function bar(label, value, target, color, planned = 0) {
   const pct = target ? Math.min(100, (value / target) * 100) : 0;
+  const planPct = target && planned > 0 ? Math.min(100 - pct, (planned / target) * 100) : 0;
+  const overWithPlan = target && planned > 0 && value + planned > target * 1.05;
   return h("div", { class: "bar-row num" },
     h("span", {}, label),
-    h("div", { class: "bar" }, h("span", { style: `width:${pct}%;background:${color}` })),
-    h("span", {}, target ? `${r0(value)}/${target}` : `${r0(value)} g`));
+    h("div", { class: "bar" },
+      h("span", { style: `width:${pct}%;background:${color}` }),
+      planPct > 0 ? h("span", { class: "plan", style: `width:${planPct}%;background:${color}` }) : null),
+    h("span", {},
+      r0(value),
+      planned > 0 ? h("span", { class: "plan-num", style: overWithPlan ? "color:var(--warn)" : null }, ` +${r0(planned)}`) : null,
+      target ? `/${target}` : " g"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1693,18 +1708,22 @@ async function renderToday(view) {
   const left = target ? target.kcal - eaten.kcal : null;
   const ringCard = h("div", { class: "card target" },
     h("div", { style: "position:relative;width:120px;height:120px" },
-      ring(eaten.kcal, target?.kcal),
+      ring(eaten.kcal, target?.kcal, planned.kcal),
       h("div", { class: "ring-centre" },
         h("div", { class: "ring-label num" }, target ? r0(Math.abs(left)).toLocaleString() : r0(eaten.kcal).toLocaleString()),
-        h("div", { class: "small muted" }, target ? (left < 0 ? "kcal over" : "kcal left") : "kcal eaten"))),
+        h("div", { class: "small muted" }, target ? (left < 0 ? "kcal over" : "kcal left") : "kcal eaten"),
+        // What's left once the planned food is eaten too
+        target && planned.kcal ? h("div", { class: "num", style: `font-size:11px;color:${left - planned.kcal < 0 ? "var(--warn)" : "var(--accent)"}` },
+          `${left - planned.kcal < 0 ? "−" : ""}${r0(Math.abs(left - planned.kcal)).toLocaleString()} after plan`) : null)),
     h("div", { class: "bars" },
-      bar("Protein", eaten.protein_g, target?.protein_g, "var(--protein)"),
-      bar("Carbs", eaten.carbs_g, target?.carbs_g, "var(--carbs)"),
-      bar("Fat", eaten.fat_g, target?.fat_g, "var(--fat)"),
+      bar("Protein", eaten.protein_g, target?.protein_g, "var(--protein)", planned.protein_g),
+      bar("Carbs", eaten.carbs_g, target?.carbs_g, "var(--carbs)", planned.carbs_g),
+      bar("Fat", eaten.fat_g, target?.fat_g, "var(--fat)", planned.fat_g),
       h("div", { class: "small muted num" },
-        target ? `${r0(eaten.kcal).toLocaleString()} of ${target.kcal.toLocaleString()} ` : "No target yet ",
-        target ? h("span", { class: "badge" }, target.source === "ai" ? "AI-tuned" : target.method) : null,
-        planned.kcal ? h("span", { style: "color:var(--accent)" }, ` · +${r0(planned.kcal)} planned`) : null)));
+        planned.kcal
+          ? `${r0(eaten.kcal).toLocaleString()} eaten + ${r0(planned.kcal).toLocaleString()} planned${target ? ` of ${target.kcal.toLocaleString()}` : ""} `
+          : target ? `${r0(eaten.kcal).toLocaleString()} of ${target.kcal.toLocaleString()} ` : "No target yet ",
+        target ? h("span", { class: "badge" }, target.source === "ai" ? "AI-tuned" : target.method) : null)));
 
   // Recovery and activity strip
   const tile = (ic, value, lbl, onclick) => h("button", { class: "tile", onclick }, icon(ic, 18), h("b", { class: "num" }, value), h("span", {}, lbl));

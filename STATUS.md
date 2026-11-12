@@ -1,8 +1,16 @@
-# Tenth: where things stand (12 Nov 2026, 08:30)
+# Tenth: where things stand (12 Nov 2026, 11:30)
 
-## 12 Nov: sleep HR typed by hand, resting HR from sleep only, clearer missed-meals note, spell check off (written, tested; needs Michael)
+## 12 Nov, 11:30: planned food shaded on the ring and macro bars (written, tested; needs Michael to commit and push `docs/`)
 
-Order: `supabase db push`, then `supabase functions deploy plan`, then commit and push `docs/`, `supabase/` and `STATUS.md`. Checked live on 12 Nov: every migration through `20261105190000` is applied, and `plan` is version 8 (the 6 Nov change is live).
+- Why: Michael wants to see what planned food (status 'planned', not eaten yet) will do to his macros, e.g. when planning dinner, and eaten vs planned numbers side by side.
+- `docs/app.js`: `ring(eaten, target, planned)` draws planned as a faint arc after the eaten arc (red when eaten + planned is over target). `bar(label, value, target, color, planned)` adds a striped, shaded segment after the eaten one; numbers read "45 +59/160", and the "+59" turns orange when eaten + planned is more than 5% over target. Ring centre adds "952 after plan" (or "−176 after plan" in orange). The line under the bars reads "583 eaten + 586 planned of 2,121". With nothing planned, the card looks as before. The AI day-feedback summary still passes no planned figure (it already counts planned as eaten).
+- `docs/styles.css`: `.bar` is a flex row, `.bar > span.plan` shaded segment, `.plan-num`, bar label column 56 to 50 px. `docs/sw.js`: `tenth-shell-v14`.
+- Tested with Playwright and the fake backend at 390 px: under target, over target, nothing planned; sleep HR checks re-run.
+- Checked live at 11:30: `20261112080000_manual_sleep_hr` is applied and `plan` is version 9 (this morning's change). Whether this morning's `docs/` push happened is unknown; this push carries it either way.
+
+## 12 Nov, 08:30: sleep HR typed by hand, resting HR from sleep only, clearer missed-meals note, spell check off
+
+Migration and `plan` (version 9) confirmed live at 11:30; `docs/` goes with the 11:30 push.
 
 - Finding: Mi Fitness only shares heart rate from workouts with Health Connect (Michael confirmed in Health Connect: thousands of readings, all from workouts). The two all-day stretches (2-3 Nov, 6-7 Nov) each started right after connecting Mi Fitness, so they look like one-off backfills. Sleep stages and SpO2 do arrive every night; no resting HR record has ever arrived. Michael is happy to type sleep HR each morning.
 - `20261112080000_manual_sleep_hr.sql`: new `daily_activity.sleep_hr_source` ('manual' or 'health_connect'); a typed sleep HR survives every sync. `low_hr` now comes from a resting HR record, or the 5th percentile of readings inside the night's sleep (30+), else empty; it used to be the whole day's 5th percentile, which gave 85-100 on workout-only days. Recomputes every day with raw records. Tested on local Postgres (typed values kept through a sync and a re-run, clearing hands back to the band's figure). Read-only check on live data: 3 Nov (48) and 7 Nov (51) keep their sleep HR; lows of 47, 60, 100, 53, 88, 85 and 94 go empty.
